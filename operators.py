@@ -1,0 +1,202 @@
+"""Buttons: Generate, Cancel, Preview Capture, and manual Project Cubemap."""
+
+import bpy
+
+from . import capture, client, jobs, projection, texturing
+from .properties import get_prefs
+
+
+def _capture(context, obj, s):
+    wm = context.window_manager
+    wm.progress_begin(0, len(projection.SIDES))
+    try:
+        return capture.capture_views(obj, int(s.face_size), s.front_axis, s.uniform,
+                                     s.capture_style, progress=wm.progress_update)
+    finally:
+        wm.progress_end()
+
+
+def _active_mesh(context):
+    obj = context.object
+    return obj if obj is not None and obj.type == "MESH" else None
+
+"""
+Capture the active object from six sides, send the views and your prompt to
+the AI server, and project the returned texture back onto the object
+"""
+class AITEX_OT_generate(bpy.types.Operator):
+    
+    bl_idname = "ai_texture.generate"
+    bl_label = "Generate Texture"
+
+    @classmethod
+    def poll(cls, context):
+        prefs = get_prefs(context)
+        if _active_mesh(context) is None:
+            cls.poll_message_set("Select a mesh object")
+            return False
+        if jobs.is_running():
+            cls.poll_message_set("A request is already running")
+            return False
+        if not context.scene.ai_texture.prompt.strip():
+            cls.poll_message_set("Type a prompt first")
+            return False
+        if prefs is None or not prefs.server_url.strip():
+            cls.poll_message_set("Set the server URL in the add-on preferences")
+            return False
+        return True
+
+    def execute(self, context):
+        s = context.scene.ai_texture
+        prefs = get_prefs(context)
+        obj = _active_mesh(context)
+        url = prefs.server_url.strip()
+
+        problem = client.check_url(url)
+        if problem:
+            self.report({"ERROR"}, problem)
+            return {"CANCELLED"}
+        # Blender 4.2+: respect Preferences > System > Network > Allow Online Access.
+        if not getattr(bpy.app, "online_access", True) and not client.is_local(url):
+            self.report({"ERROR"}, "Online access is turned off. Enable 'Allow Online "
+                                   "Access' in Preferences > System > Network")
+            return {"CANCELLED"}
+        if not obj.data.polygons:
+            self.report({"ERROR"}, f"'{obj.name}' has no faces to texture")
+            return {"CANCELLED"}
+
+        try:
+            image, png, bounds = _capture(context, obj, s)
+        except Exception as err:
+            self.report({"ERROR"}, f"Capturing the views failed: {err}")
+            return {"CANCELLED"}
+        s.last_capture = image
+
+        job = jobs.Job(obj.name, context.scene.name, bounds, {
+            "front_axis": s.front_axis, "uniform": s.uniform,
+            "padding": s.padding, "shading": s.shading,
+        })
+        jobs.start(job, {
+            "server_url": url, "api_key": prefs.api_key,
+            "timeout": prefs.timeout, "poll_interval": prefs.poll_interval,
+            "image_png": png, "prompt": s.prompt.strip(),
+            "face_size": int(s.face_size), "faces": capture.faces_description(),
+        })
+        self.report({"INFO"}, f"Sent '{obj.name}' to the AI server")
+        return {"FINISHED"}
+
+"""Stop waiting for the server (the server may still finish its work)"""
+class AITEX_OT_cancel(bpy.types.Operator):
+    bl_idname = "ai_texture.cancel"
+    bl_label = "Cancel"
+
+    @classmethod
+    def poll(cls, context):
+        return jobs.is_running()
+
+    def execute(self, context):
+        jobs.cancel()
+        return {"FINISHED"}
+
+"""
+Make the six-view image without sending it, to check what the server will see.
+Open it in an Image Editor to inspect or save it
+"""
+class AITEX_OT_preview_capture(bpy.types.Operator):
+    bl_idname = "ai_texture.preview_capture"
+    bl_label = "Preview Capture"
+
+    @classmethod
+    def poll(cls, context):
+        if _active_mesh(context) is None:
+            cls.poll_message_set("Select a mesh object")
+            return False
+        return True
+
+    def execute(self, context):
+        s = context.scene.ai_texture
+        try:
+            image, _png, _bounds = _capture(context, _active_mesh(context), s)
+        except Exception as err:
+            self.report({"ERROR"}, f"Capturing the views failed: {err}")
+            return {"CANCELLED"}
+        s.last_capture = image
+        self.report({"INFO"}, f"Captured '{image.name}' ({image.size[0]}×{image.size[1]})")
+        return {"FINISHED"}
+
+"""Project the chosen cubemap image onto the selected mesh objects from all six sides"""
+class AITEX_OT_project_cubemap(bpy.types.Operator):
+    bl_idname = "ai_texture.project_cubemap"
+    bl_label = "Project Cubemap"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        if context.scene.ai_texture.image is None:
+            cls.poll_message_set("Choose a cubemap image first")
+            return False
+        if not any(ob.type == "MESH" for ob in context.selected_objects):
+            cls.poll_message_set("Select at least one mesh object")
+            return False
+        return True
+
+    def execute(self, context):
+        s = context.scene.ai_texture
+        image = s.image
+        width, height = image.size
+        if not width or not height:
+            self.report({"ERROR"}, f"Couldn't read '{image.name}'. Is the file missing?")
+            return {"CANCELLED"}
+
+        layout = s.layout
+        if layout == "AUTO":
+            layout = projection.detect_layout(width, height)
+            if layout is None:
+                if projection.looks_equirectangular(width, height):
+                    msg = ("This is a 2:1 panorama (equirectangular), not a cubemap. "
+                           "Convert it to a cubemap first")
+                else:
+                    msg = (f"Can't tell the layout of a {width}×{height} image. "
+                           "Pick one under Layout")
+                self.report({"ERROR"}, msg)
+                return {"CANCELLED"}
+
+        cols, rows, _cells = projection.LAYOUTS[layout]
+        if abs(width / cols - height / rows) > 1.0:
+            self.report({"WARNING"},
+                        f"Faces aren't square for {projection.LAYOUT_NAMES[layout]} "
+                        f"({width / cols:.0f}×{height / rows:.0f} px). Check the layout")
+
+        material = texturing.ensure_material(image, s.shading, key=image,
+                                             name=f"Cubemap {image.name}")
+        rotations = {side: int(getattr(s, f"turn_{side.lower()}")) for side in projection.SIDES}
+        flips = {side: getattr(s, f"flip_{side.lower()}") for side in projection.SIDES}
+
+        # Mesh data can only be written reliably in Object Mode.
+        was_editing = context.mode == "EDIT_MESH"
+        if was_editing:
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        done, seen = 0, set()
+        for obj in context.selected_objects:
+            if obj.type != "MESH" or obj.data in seen:
+                continue
+            seen.add(obj.data)
+            error = texturing.apply_cubemap(
+                obj, image, material, layout=layout, mode=s.mode,
+                front_axis=s.front_axis, uniform=s.uniform, padding=s.padding,
+                rotations=rotations, flips=flips, swap_front_back=s.swap_front_back)
+            if error:
+                self.report({"WARNING"}, error)
+            else:
+                done += 1
+
+        if was_editing:
+            bpy.ops.object.mode_set(mode="EDIT")
+        self.report({"INFO"}, f"Projected {projection.LAYOUT_NAMES[layout]} onto "
+                              f"{done} object{'s' if done != 1 else ''}")
+        return {"FINISHED"}
+
+
+classes = (AITEX_OT_generate, AITEX_OT_cancel, AITEX_OT_preview_capture,
+           AITEX_OT_project_cubemap)

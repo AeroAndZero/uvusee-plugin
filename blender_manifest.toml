@@ -1,0 +1,18 @@
+schema_version = "1.0.0"
+
+id = "uvusee"
+version = "1.0.0"
+name = "UVUSee"
+tagline = "Texture objects with AI from a single prompt"
+maintainer = "AeroAndZero"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+
+tags = ["Material", "UV"]
+
+[permissions]
+network = "Send captured views and prompt to your AI texturing server"
+files = "Save captured views and returned textures"
