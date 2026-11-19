@@ -76,7 +76,7 @@ class AITEX_OT_generate(bpy.types.Operator):
         })
 
         # Start the worker to send the job to the server for processing. 
-        context_prompt = "You are given six sides of an object. The image on the top is taken from the top of the object, the image on the bottom is taken from the bottom of the object. Add a 2d texture to the object. Do not mix the top image with the bottom image. Do not add extra objects, only paint on top of the given object. " + s.prompt.strip()
+        context_prompt = "You are given six sides of an object. the top side is on the top, the bottom side is on the bottom. Th left, right, forward and backward sides are on the middle. You have to add color to the object. Do not add any extra objects, only paint on top of the given object. " + s.prompt.strip()
         jobs.start(job, {
             "server_url": url, "api_key": prefs.api_key,
             "timeout": prefs.timeout, "poll_interval": prefs.poll_interval,
