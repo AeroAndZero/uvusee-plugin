@@ -29,13 +29,15 @@ class AITexPreferences(bpy.types.AddonPreferences):
     )
     timeout: IntProperty(
         name="Timeout",
-        description="Give up if the server hasn't delivered a result after this many seconds",
+        description="Give up if a job runs on the server for longer than this many "
+                    "seconds. Time spent waiting in the server's queue doesn't count",
         default=300, min=10, max=3600,
     )
     poll_interval: FloatProperty(
         name="Check Every",
-        description="Seconds between status checks when the server works in the background",
-        default=2.0, min=0.5, max=60.0,
+        description="Seconds between status checks while a job runs. While it waits "
+                    "in the queue with no change, checks slow down to 5× this",
+        default=5.0, min=0.5, max=60.0,
     )
 
     def draw(self, context):

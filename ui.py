@@ -63,13 +63,13 @@ class AITEX_PT_main(_AITexPanel, bpy.types.Panel):
             layout.prop(s, "prompt", text="", icon="TEXT")
 
         if job and job.running:
+            icon, headline, detail = job.describe()
             box = layout.box()
-            _wrapped(box, context, job.message, icon="SORTTIME")
-            text = f"{job.elapsed:.0f} s"
-            if job.progress is not None and hasattr(box, "progress"):
-                box.progress(factor=job.progress, text=f"{job.progress:.0%} · {text}")
-            else:
-                box.label(text=f"Elapsed: {text}")
+            _wrapped(box, context, headline, icon=icon)
+            if job.phase == "running" and job.progress is not None and hasattr(box, "progress"):
+                box.progress(factor=job.progress, text=f"{job.progress:.0%}")
+            if detail:
+                box.label(text=detail, icon="TIME")
             box.operator("ai_texture.cancel", icon="CANCEL")
         else:
             row = layout.row()

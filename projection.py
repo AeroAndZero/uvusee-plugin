@@ -1,7 +1,11 @@
 """The geometry: which cube side each polygon gets, and where its UVs land in
 a cubemap image. Also used by capture.py so the views we send to the server
 line up exactly with how the result is projected back.
+
+This file deliberately does not import bpy. It only needs numpy, so the maths
+can be read, tested and reused on its own.
 """
+
 import numpy as np
 
 SIDES = ("FRONT", "BACK", "LEFT", "RIGHT", "TOP", "BOTTOM")
@@ -98,14 +102,13 @@ def detect_layout(width, height, tolerance=0.02):
 def looks_equirectangular(width, height):
     return bool(width and height) and abs(width / height - 2.0) < 0.04
 
-"""
-Centre and half-size of the points' bounding box, in projection space.
 
-The capture and the projection must use the very same box, otherwise the
-returned texture would land slightly off. Both call this function.
-"""
 def compute_bounds(points, front_axis="NEG_Y", uniform=False):
-    
+    """Centre and half-size of the points' bounding box, in projection space.
+
+    The capture and the projection must use the very same box, otherwise the
+    returned texture would land slightly off. Both call this function.
+    """
     rot = FRONT_AXIS_MATRICES[front_axis]
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3) @ rot.T
     lo, hi = pts.min(axis=0), pts.max(axis=0)
@@ -119,30 +122,29 @@ def compute_bounds(points, front_axis="NEG_Y", uniform=False):
     half[half < 1e-9] = biggest if biggest > 1e-9 else 1.0
     return mid, half
 
-"""
-Work out a UV for every face corner (loop) of a mesh.
 
-co           (V, 3) vertex positions in object space
-poly_normals (P, 3) polygon normals
-poly_centers (P, 3) polygon centres
-loop_verts   (L,)   vertex index of each loop
-loop_poly    (L,)   polygon index of each loop
-mode         "BOX": each polygon takes the side its normal faces most,
-                    and is projected straight (orthographically) onto it.
-                "SPHERE": each polygon takes the side its direction from the
-                    object's centre points to, and is projected through the
-                    centre, the way a real cubemap is sampled. Seamless on
-                    round objects.
-bounds       (mid, half) from compute_bounds(); computed from co if None.
-rotations / flips: optional per-side fixes {side: quarter_turns / bool}.
-
-Returns (uvs (L, 2) float32, poly_side (P,) indices into SIDES).
-"""
 def compute_uvs(co, poly_normals, poly_centers, loop_verts, loop_poly, *,
                 layout, mode="BOX", front_axis="NEG_Y", uniform=False,
                 padding_px=1.0, image_size=(1024, 768), bounds=None,
                 rotations=None, flips=None, swap_front_back=False):
-    
+    """Work out a UV for every face corner (loop) of a mesh.
+
+    co           (V, 3) vertex positions in object space
+    poly_normals (P, 3) polygon normals
+    poly_centers (P, 3) polygon centres
+    loop_verts   (L,)   vertex index of each loop
+    loop_poly    (L,)   polygon index of each loop
+    mode         "BOX": each polygon takes the side its normal faces most,
+                        and is projected straight (orthographically) onto it.
+                 "SPHERE": each polygon takes the side its direction from the
+                        object's centre points to, and is projected through the
+                        centre, the way a real cubemap is sampled. Seamless on
+                        round objects.
+    bounds       (mid, half) from compute_bounds(); computed from co if None.
+    rotations / flips: optional per-side fixes {side: quarter_turns / bool}.
+
+    Returns (uvs (L, 2) float32, poly_side (P,) indices into SIDES).
+    """
     rotations = rotations or {}
     flips = flips or {}
     cols, rows, cells = LAYOUTS[layout]

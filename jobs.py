@@ -19,19 +19,32 @@ from . import client, projection, texturing
 ACTIVE = {"uploading", "waiting", "received"}
 
 
+def _clock(seconds):
+    seconds = int(max(0, seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
 class Job:
     def __init__(self, object_name, scene_name, bounds, options):
         self.object_name = object_name
         self.scene_name = scene_name
         self.bounds = bounds          # the capture's bounding box, reused when applying
         self.options = options        # projection settings at the time of sending
-        self.state = "uploading"
-        self.message = "Uploading…"
-        self.progress = None
+        self.state = "uploading"      # uploading / waiting / received / done / failed / cancelled
+        self.message = ""             # final message, or the Edit Mode hint
         self.result = None
         self.started = time.monotonic()
         self.finished = None
         self.cancel_event = threading.Event()
+
+        # Live status reported by the server (written by the worker thread).
+        self.phase = "uploading"      # uploading / queued / running / downloading / retrying
+        self.phase_started = self.started
+        self.position = None          # jobs ahead of ours in the server's queue
+        self.progress = None          # 0..1 if the server reports it
+        self.server_message = ""
+        self.retry = None             # (attempt, max_attempts) while reconnecting
+        self.last_contact = None      # when the server last answered
 
     @property
     def running(self):
@@ -45,6 +58,65 @@ class Job:
         self.state = state
         self.message = message
         self.finished = time.monotonic()
+
+    def update(self, info):
+        """Called from the worker thread with what the client just learned."""
+        if not self.running:
+            return
+        now = time.monotonic()
+        phase = info["phase"]
+        if phase != self.phase:
+            self.phase_started = now
+        self.phase = phase
+        self.state = "waiting"
+        if phase == "retrying":
+            self.retry = (info.get("attempt"), info.get("max_attempts"))
+            self.server_message = info.get("message", "")
+            return
+        self.retry = None
+        self.position = info.get("position")
+        self.progress = info.get("progress")
+        self.server_message = info.get("message", "")
+        if phase != "uploading":
+            self.last_contact = now
+
+    def describe(self):
+        """(icon, headline, detail) for the panel."""
+        now = time.monotonic()
+        if self.state == "received":
+            return "BRUSH_DATA", self.message or "Applying texture…", ""
+        phase = self.phase
+        if phase == "uploading":
+            icon, head = "EXPORT", "Uploading views to the server…"
+        elif phase == "queued":
+            icon = "SORTTIME"
+            if self.position is None:
+                head = "Queued on the server"
+            elif self.position == 0:
+                head = "Queued: next in line"
+            else:
+                head = f"Queued: {self.position} job{'s' if self.position != 1 else ''} ahead"
+        elif phase == "running":
+            icon, head = "SHADERFX", "Generating on the server"
+            if self.server_message:
+                head += f": {self.server_message}"
+        elif phase == "downloading":
+            icon, head = "IMPORT", "Downloading the result…"
+        elif phase == "retrying":
+            attempt, most = self.retry or (None, None)
+            icon = "ERROR"
+            head = f"Lost contact, retrying ({attempt}/{most})"
+            if self.server_message:
+                head += f": {self.server_message}"
+        else:
+            icon, head = "SORTTIME", phase
+
+        detail = f"Total {_clock(now - self.started)}"
+        if phase in {"queued", "running"}:
+            detail += f" · this step {_clock(now - self.phase_started)}"
+        if self.last_contact is not None and phase != "uploading":
+            detail += f" · checked {now - self.last_contact:.0f} s ago"
+        return icon, head, detail
 
 
 _job = None
@@ -77,21 +149,16 @@ def cancel():
 
 
 def _worker(job, request):
-    def on_status(message, progress=None):
-        if job.running:
-            job.state = "waiting"
-            job.message = message
-            job.progress = progress
-
+    api = client.Client(request["server_url"], request["api_key"],
+                        timeout=request["timeout"],
+                        poll_interval=request["poll_interval"],
+                        on_status=job.update,
+                        is_cancelled=job.cancel_event.is_set)
     try:
-        api = client.Client(request["server_url"], request["api_key"],
-                            timeout=request["timeout"],
-                            poll_interval=request["poll_interval"],
-                            on_status=on_status,
-                            is_cancelled=job.cancel_event.is_set)
         data = api.request_texture(request["image_png"], request["prompt"],
                                    request["face_size"], request["faces"])
     except client.Cancelled:
+        api.cancel_remote()          # lets the server drop the job, if it supports that
         return
     except client.ServerError as err:
         if not job.cancel_event.is_set():
@@ -101,10 +168,11 @@ def _worker(job, request):
         if not job.cancel_event.is_set():
             job.finish("failed", f"Unexpected error: {err!r}")
         return
-    if not job.cancel_event.is_set():
-        job.result = data
-        job.state = "received"
-        job.message = "Applying texture…"
+    if job.cancel_event.is_set():
+        return
+    job.result = data
+    job.message = "Applying texture…"
+    job.state = "received"
 
 
 def _tick():

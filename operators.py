@@ -20,12 +20,10 @@ def _active_mesh(context):
     obj = context.object
     return obj if obj is not None and obj.type == "MESH" else None
 
-"""
-Capture the active object from six sides, send the views and your prompt to
-the AI server, and project the returned texture back onto the object
-"""
+
 class AITEX_OT_generate(bpy.types.Operator):
-    
+    """Capture the active object from six sides, send the views and your prompt to
+    the AI server, and project the returned texture back onto the object"""
     bl_idname = "ai_texture.generate"
     bl_label = "Generate Texture"
 
@@ -76,17 +74,21 @@ class AITEX_OT_generate(bpy.types.Operator):
             "front_axis": s.front_axis, "uniform": s.uniform,
             "padding": s.padding, "shading": s.shading,
         })
+
+        # Start the worker to send the job to the server for processing. 
+        context_prompt = "You are given six sides of an object. Add a 2d texture to the object. Do not add extra objects, only paint on top of the given object. " + s.prompt.strip()
         jobs.start(job, {
             "server_url": url, "api_key": prefs.api_key,
             "timeout": prefs.timeout, "poll_interval": prefs.poll_interval,
-            "image_png": png, "prompt": s.prompt.strip(),
+            "image_png": png, "prompt": context_prompt,
             "face_size": int(s.face_size), "faces": capture.faces_description(),
         })
         self.report({"INFO"}, f"Sent '{obj.name}' to the AI server")
         return {"FINISHED"}
 
-"""Stop waiting for the server (the server may still finish its work)"""
+
 class AITEX_OT_cancel(bpy.types.Operator):
+    """Stop waiting for the server (the server may still finish its work)"""
     bl_idname = "ai_texture.cancel"
     bl_label = "Cancel"
 
@@ -98,11 +100,10 @@ class AITEX_OT_cancel(bpy.types.Operator):
         jobs.cancel()
         return {"FINISHED"}
 
-"""
-Make the six-view image without sending it, to check what the server will see.
-Open it in an Image Editor to inspect or save it
-"""
+
 class AITEX_OT_preview_capture(bpy.types.Operator):
+    """Make the six-view image without sending it, to check what the server will see.
+    Open it in an Image Editor to inspect or save it"""
     bl_idname = "ai_texture.preview_capture"
     bl_label = "Preview Capture"
 
@@ -124,8 +125,9 @@ class AITEX_OT_preview_capture(bpy.types.Operator):
         self.report({"INFO"}, f"Captured '{image.name}' ({image.size[0]}×{image.size[1]})")
         return {"FINISHED"}
 
-"""Project the chosen cubemap image onto the selected mesh objects from all six sides"""
+
 class AITEX_OT_project_cubemap(bpy.types.Operator):
+    """Project the chosen cubemap image onto the selected mesh objects from all six sides"""
     bl_idname = "ai_texture.project_cubemap"
     bl_label = "Project Cubemap"
     bl_options = {"REGISTER", "UNDO"}

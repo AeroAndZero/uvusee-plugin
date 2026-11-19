@@ -1,6 +1,6 @@
 """AI Texture Projector: Properties editor > Material tab > AI Texture.
 
-File descriptions:
+How the pieces fit together:
 
     properties.py  settings (scene) and server details (add-on preferences)
     ui.py          the panels you see
