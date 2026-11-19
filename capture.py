@@ -10,7 +10,9 @@ camera, so the user's scene, camera, lights and settings are never touched.
 """
 
 import os
+import struct
 import tempfile
+import zlib
 
 import bpy
 import numpy as np
@@ -83,22 +85,63 @@ def _camera_for_side(obj, mid, half, side, front_axis):
     return matrix, 2.0 * max(half_w, half_h), half_w / half_h, mirror, margin, clip_end
 
 
-def capture_views(obj, size, front_axis, uniform, style, progress=None):
-    """Render six views of `obj` and assemble them as a horizontal cross.
+def _world_extents(obj, half, front_axis):
+    """Size of the bounding box along projection X (width), Y (depth) and Z
+    (height), in world units, so the object's scale is taken into account."""
+    rot_t = projection.FRONT_AXIS_MATRICES[front_axis].T
+    m3 = obj.matrix_world.to_3x3()
+    return [2.0 * half[i] * (m3 @ Vector(rot_t @ np.eye(3)[i])).length for i in range(3)]
 
-    Returns (blender_image, png_bytes, bounds). The image is packed into the
-    .blend so the thumbnail survives saving.
+
+def plan_layout(obj, size, front_axis, keep_proportions):
+    """Decide the capture image's layout.
+
+    Normal: the 4:3 horizontal cross, every side stretched to a square cell.
+    Keep Proportions: the bounding box unfolded at its true proportions
+    (projection.proportional_net), with the same pixel budget.
+
+    Returns (bounds, layout) where layout is a dict:
+        name         "horizontal_cross" or "proportional_cross"
+        size         (width, height) of the image in pixels
+        pixel_rects  {side: (x, y, w, h)} top-left origin
+        uv           what projection.compute_uvs takes as `layout`
+    """
+    # Both layouts map each side onto its whole cell, so the projection uses
+    # the true box (uniform=False); proportions come from the cell sizes.
+    bounds = texturing.object_bounds(obj, front_axis, uniform=False)
+    if not keep_proportions:
+        width, height, rects = projection.grid_pixel_rects(LAYOUT, size)
+        return bounds, {"name": "horizontal_cross", "size": (width, height),
+                        "pixel_rects": rects, "uv": LAYOUT}
+    # Size the cells from the true extents (flat sides stay thin).
+    _mid, true_half = texturing.object_bounds(obj, front_axis, uniform=False, flat_fix=False)
+    ex, ey, ez = _world_extents(obj, true_half, front_axis)
+    width, height, rects = projection.proportional_net(
+        ex, ey, ez, budget_px=12 * size * size, max_side=min(8 * size, 8192))
+    return bounds, {"name": "proportional_cross", "size": (width, height),
+                    "pixel_rects": rects,
+                    "uv": projection.net_uv_rects(width, height, rects)}
+
+
+def capture_views(obj, size, front_axis, uniform, style, progress=None):
+    """Render six views of `obj` and assemble them into one image: the 4:3
+    horizontal cross, or with `uniform` (Keep Proportions) the object's box
+    unfolded at its true proportions.
+
+    Returns (blender_image, png_bytes, bounds, layout); see plan_layout. The
+    image is packed into the .blend so the thumbnail survives saving.
     """
     if obj.mode == "EDIT":
         obj.update_from_editmode()
-    mid, half = bounds = texturing.object_bounds(obj, front_axis, uniform)
-    cols, rows, cells = projection.LAYOUTS[LAYOUT]
+    bounds, layout = plan_layout(obj, size, front_axis, uniform)
+    mid, half = bounds
+    width, height = layout["size"]
 
     tmpdir = tempfile.mkdtemp(prefix="ai_texture_")
     scene = bpy.data.scenes.new("AI Texture Capture")
     cam_data = bpy.data.cameras.new("AI Texture Capture")
     cam = bpy.data.objects.new("AI Texture Capture", cam_data)
-    sheet = np.zeros((rows * size, cols * size, 4), dtype=np.float32)   # top row first
+    sheet = np.zeros((height, width, 4), dtype=np.float32)   # top row first
     was_hidden = obj.hide_render
 
     try:
@@ -111,17 +154,22 @@ def capture_views(obj, size, front_axis, uniform, style, progress=None):
         scene.camera = cam
 
         for step, side in enumerate(projection.SIDES):
+            x, y, w, h = layout["pixel_rects"][side]
             matrix, ortho, aspect, mirror, clip_start, clip_end = \
                 _camera_for_side(obj, mid, half, side, front_axis)
             cam.matrix_world = matrix
             cam_data.ortho_scale = ortho
             cam_data.clip_start = clip_start * 0.5
             cam_data.clip_end = clip_end
-            # Non-square pixels squeeze a non-square side into a square cell,
-            # exactly like the projection stretches it back.
-            aspect = min(max(aspect, 1 / 200), 200)
-            scene.render.pixel_aspect_x = max(aspect, 1.0)
-            scene.render.pixel_aspect_y = max(1.0 / aspect, 1.0)
+            scene.render.resolution_x = w
+            scene.render.resolution_y = h
+            # The side's real shape is `aspect` (width/height); the cell is w x h
+            # pixels. Non-square pixels make up the difference, exactly like the
+            # projection stretches it back. In the proportional layout the cell
+            # already has the side's shape, so this is ~1.
+            pixel = min(max(aspect / (w / h), 1 / 200), 200)
+            scene.render.pixel_aspect_x = max(pixel, 1.0)
+            scene.render.pixel_aspect_y = max(1.0 / pixel, 1.0)
 
             path = os.path.join(tmpdir, f"{side.lower()}.png")
             scene.render.filepath = path
@@ -129,15 +177,14 @@ def capture_views(obj, size, front_axis, uniform, style, progress=None):
 
             view_img = bpy.data.images.load(path)
             try:
-                pixels = np.empty(size * size * 4, dtype=np.float32)
+                pixels = np.empty(w * h * 4, dtype=np.float32)
                 view_img.pixels.foreach_get(pixels)
             finally:
                 bpy.data.images.remove(view_img)
-            view = pixels.reshape(size, size, 4)[::-1]       # Blender stores bottom row first
+            view = pixels.reshape(h, w, 4)[::-1]       # Blender stores bottom row first
             if mirror:
                 view = view[:, ::-1]
-            col, row, _turns = cells[side]
-            sheet[row * size:(row + 1) * size, col * size:(col + 1) * size] = view
+            sheet[y:y + h, x:x + w] = view
             if progress:
                 progress(step + 1)
     finally:
@@ -147,7 +194,7 @@ def capture_views(obj, size, front_axis, uniform, style, progress=None):
         bpy.data.cameras.remove(cam_data)
 
     out_path = os.path.join(tmpdir, "cubemap.png")
-    image = bpy.data.images.new(f"AI Capture {obj.name}", cols * size, rows * size, alpha=True)
+    image = bpy.data.images.new(f"AI Capture {obj.name}", width, height, alpha=True)
     image.pixels.foreach_set(sheet[::-1].ravel())
     image.filepath_raw = out_path
     image.file_format = "PNG"
@@ -155,42 +202,87 @@ def capture_views(obj, size, front_axis, uniform, style, progress=None):
     with open(out_path, "rb") as f:
         png_bytes = f.read()
     image.pack()
-    return image, png_bytes, bounds
+    return image, png_bytes, bounds, layout
 
 
-def flatten_png(image, color=(0.0, 0.0, 0.0)):
-    """PNG bytes of `image` laid over a plain background (no transparency).
+def flatten_png(image, color=(0.0, 0.0, 0.0), canvas=None, out_size=None):
+    """PNG bytes of `image` laid over a plain background (no transparency),
+    for hosted models (ChatGPT / Nano Banana).
 
     Hosted image models tend to treat transparent areas unpredictably, so they
     get the views on solid black instead (the prompt tells them so).
+    canvas = (width, height, x, y): place the image at (x, y), top-left origin,
+    on a larger canvas of that size, e.g. to reach an aspect ratio the model
+    supports. jobs.py crops the same rectangle out of the answer.
+    out_size = (width, height): scale the canvas to this size before encoding
+    (the size the model will answer at; no point uploading more pixels).
+
+    The PNG is written by encode_png, not by Blender, so it holds only the
+    pixels: Blender's writer adds colour-profile, EXIF and offset blocks that
+    image APIs don't need and may refuse.
     """
-    width, height = image.size
-    pixels = np.empty(width * height * 4, dtype=np.float32)
-    image.pixels.foreach_get(pixels)
-    pixels = pixels.reshape(-1, 4)
-    alpha = pixels[:, 3:4]
-    pixels[:, :3] = pixels[:, :3] * alpha + np.array(color, dtype=np.float32) * (1.0 - alpha)
-    pixels[:, 3] = 1.0
+    src_w, src_h = image.size
+    src = np.empty(src_w * src_h * 4, dtype=np.float32)
+    image.pixels.foreach_get(src)
+    src = src.reshape(src_h, src_w, 4)[::-1]                   # top row first
+    alpha = src[..., 3:4]
+    rgb = src[..., :3] * alpha + np.array(color, dtype=np.float32) * (1.0 - alpha)
 
-    path = os.path.join(tempfile.mkdtemp(prefix="ai_texture_"), "cubemap_flat.png")
-    flat = bpy.data.images.new("AI Capture flat", width, height, alpha=False)
+    width, height, ox, oy = canvas or (src_w, src_h, 0, 0)
+    out = np.empty((height, width, 3), dtype=np.float32)
+    out[...] = color
+    out[oy:oy + src_h, ox:ox + src_w] = rgb
+
+    if out_size and tuple(out_size) != (width, height):
+        out = _resize(out, *out_size)
+    return encode_png(out)
+
+
+def _resize(rgb, width, height):
+    """Scale an (h, w, 3) float image with Blender's image scaler."""
+    src_h, src_w = rgb.shape[:2]
+    tmp = bpy.data.images.new("AI Capture resize", src_w, src_h, alpha=False, float_buffer=True)
     try:
-        flat.pixels.foreach_set(pixels.ravel())
-        flat.filepath_raw = path
-        flat.file_format = "PNG"
-        flat.save()
+        rgba = np.ones((src_h, src_w, 4), dtype=np.float32)
+        rgba[..., :3] = rgb[::-1]                              # Blender: bottom row first
+        tmp.pixels.foreach_set(rgba.ravel())
+        tmp.scale(width, height)
+        scaled = np.empty(width * height * 4, dtype=np.float32)
+        tmp.pixels.foreach_get(scaled)
     finally:
-        bpy.data.images.remove(flat)
-    with open(path, "rb") as f:
-        data = f.read()
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-    return data
+        bpy.data.images.remove(tmp)
+    return scaled.reshape(height, width, 4)[::-1, :, :3]
 
 
-def faces_description():
-    """Where each side sits in the sent image, for the server: {"front": [col, row]}."""
-    _cols, _rows, cells = projection.LAYOUTS[LAYOUT]
-    return {side.lower(): [col, row] for side, (col, row, _t) in cells.items()}
+def encode_png(rgb):
+    """A minimal standard PNG (8-bit RGB, no metadata) from an (h, w, 3) float
+    image with values 0..1, top row first."""
+    height, width = rgb.shape[:2]
+    data = np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8)
+    raw = np.zeros((height, 1 + width * 3), dtype=np.uint8)   # filter byte 0 per row
+    raw[:, 1:] = data.reshape(height, width * 3)
+
+    def chunk(kind, payload):
+        return (struct.pack(">I", len(payload)) + kind + payload
+                + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)   # 8-bit, RGB
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(raw.tobytes(), 6)) + chunk(b"IEND", b""))
+
+
+def faces_description(layout):
+    """Where each side sits in the sent image, for the server.
+
+    horizontal_cross:   {"front": [col, row], ...}       (grid cells, as before)
+    proportional_cross: {"front": [x, y, w, h], ...}     (pixels, top-left origin)
+    """
+    if layout["name"] == "horizontal_cross":
+        _cols, _rows, cells = projection.LAYOUTS[LAYOUT]
+        return {side.lower(): [col, row] for side, (col, row, _t) in cells.items()}
+    return face_rects(layout)
+
+
+def face_rects(layout):
+    """{"front": [x, y, w, h], ...} in pixels, top-left origin, for any layout."""
+    return {side.lower(): list(rect) for side, rect in layout["pixel_rects"].items()}

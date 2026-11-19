@@ -1,5 +1,8 @@
 """Buttons: Generate, Cancel, Preview Capture, and manual Project Cubemap."""
 
+import os
+import tempfile
+
 import bpy
 
 from . import capture, client, jobs, projection, providers, texturing
@@ -68,19 +71,23 @@ class AITEX_OT_generate(bpy.types.Operator):
             return {"CANCELLED"}
 
         try:
-            image, png, bounds = _capture(context, obj, s)
+            image, png, bounds, layout = _capture(context, obj, s)
         except Exception as err:
             self.report({"ERROR"}, f"Capturing the views failed: {err}")
             return {"CANCELLED"}
         s.last_capture = image
         width, height = image.size
 
+        plan = providers.plan_canvas(provider, width, height) if hosted else None
         job = jobs.Job(obj.name, context.scene.name, bounds, {
-            "front_axis": s.front_axis, "uniform": s.uniform,
+            # Proportions live in the layout's cell sizes; the projection itself
+            # always maps each side onto its whole cell.
+            "front_axis": s.front_axis, "uniform": False,
             "padding": s.padding, "shading": s.shading,
-            # Hosted models return their own resolution; stretch it back to the
-            # capture's exact size so it lines up with the views we sent.
-            "fit_to": (width, height) if hosted else None,
+            "layout": layout,
+            # Hosted models answer at their own resolution, on the padded canvas
+            # we sent: scale back to it and crop the capture out of it.
+            "canvas": plan["canvas"] if hosted else None,
         }, provider_label=providers.PROVIDERS[provider]["label"] if hosted else "")
 
         # Start the worker to send the job to the server for processing.
@@ -93,16 +100,27 @@ class AITEX_OT_generate(bpy.types.Operator):
             "provider": provider,
             "timeout": prefs.timeout,
             "prompt": context_prompt,
-            "face_size": int(s.face_size), "faces": capture.faces_description(),
+            "face_size": int(s.face_size), "faces": capture.faces_description(layout),
+            "layout_name": layout["name"], "face_rects": capture.face_rects(layout),
         }
         if hosted:
-            # Hosted models handle transparency poorly: send a plain background.
+            # Hosted models handle transparency poorly: send a plain background,
+            # at the size the model answers at. Keep a copy for checking errors.
+            upload = capture.flatten_png(image, canvas=plan["canvas"],
+                                         out_size=plan["upload_size"])
+            upload_copy = os.path.join(tempfile.gettempdir(), "uvusee_last_upload.png")
+            try:
+                with open(upload_copy, "wb") as f:
+                    f.write(upload)
+            except OSError:
+                upload_copy = ""
             request.update({
-                "image_png": capture.flatten_png(image),
+                "image_png": upload,
+                "upload_copy": upload_copy,
                 "api_key": provider_key(prefs),
                 "model": (prefs.openai_model if provider == "OPENAI" else prefs.gemini_model).strip(),
                 "quality": prefs.openai_quality,
-                "size": (width, height),
+                "plan": plan,
             })
         else:
             request.update({
@@ -146,7 +164,7 @@ class AITEX_OT_preview_capture(bpy.types.Operator):
     def execute(self, context):
         s = context.scene.ai_texture
         try:
-            image, _png, _bounds = _capture(context, _active_mesh(context), s)
+            image, _png, _bounds, _layout = _capture(context, _active_mesh(context), s)
         except Exception as err:
             self.report({"ERROR"}, f"Capturing the views failed: {err}")
             return {"CANCELLED"}

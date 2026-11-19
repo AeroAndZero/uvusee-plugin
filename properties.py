@@ -232,9 +232,11 @@ class AITexSettings(bpy.types.PropertyGroup):
     )
     uniform: BoolProperty(
         name="Keep Proportions",
-        description="Use the same scale on every axis so images aren't stretched on "
-                    "non-cubic objects. Shorter sides then use only the middle "
-                    "part of their image",
+        description="Don't stretch the sides into square cells. AI capture: the "
+                    "object's box is unfolded at its true proportions, so wide or "
+                    "tall objects fill the image tightly (the image is then not 4:3). "
+                    "Existing cubemaps: the same scale on every axis, so shorter "
+                    "sides use only the middle part of their square",
         default=False,
     )
     padding: FloatProperty(

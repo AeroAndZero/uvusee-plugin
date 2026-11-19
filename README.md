@@ -34,7 +34,10 @@ Pick one in the add-on preferences or from the drop-down at the top of the panel
   image arrives. Busy/rate-limited answers (429/500/503) are retried twice.
 - For these two, the views are sent on a plain black background (no
   transparency), an extra paragraph asks the model to keep every outline in
-  place, and the result is stretched back to the capture's exact size.
+  place, and the result is scaled back to the capture's exact size. If the
+  capture's shape isn't one the model can produce (e.g. a very wide *Keep
+  Proportions* layout), it is centred on a larger black canvas that is, and
+  the same area is cropped out of the answer.
 - General image models redraw the whole picture, so the result can drift
   slightly from the silhouettes and the six views may not match at their
   edges. A custom server with a geometry-aware pipeline gives the most
@@ -68,9 +71,10 @@ Sub-sections:
 |-------------|--------|---------|
 | `image`     | file   | `cubemap.png`, RGBA PNG, `4N × 3N` pixels |
 | `prompt`    | text   | The user's prompt |
-| `layout`    | text   | Always `horizontal_cross` |
+| `layout`    | text   | `horizontal_cross`, or `proportional_cross` when *Keep Proportions* is on |
 | `face_size` | text   | `N`, pixels per face (256, 512, 1024 or 2048) |
-| `faces`     | text   | JSON, `[column, row]` of each face, row 0 = top: `{"top":[1,0],"left":[0,1],"front":[1,1],"right":[2,1],"back":[3,1],"bottom":[1,2]}` |
+| `faces`     | text   | JSON, `[column, row]` of each face, row 0 = top: `{"top":[1,0],"left":[0,1],"front":[1,1],"right":[2,1],"back":[3,1],"bottom":[1,2]}` (for `proportional_cross`: pixel rectangles, as in `face_rects`) |
+| `face_rects` | text  | JSON, `[x, y, width, height]` of each face in pixels, top-left origin, for either layout |
 
 Header `Authorization: Bearer <API Key>` is sent when a key is set.
 
@@ -82,6 +86,14 @@ The image is a horizontal cross:
            [BOTTOM]
 ```
 
+With **Keep Proportions** on, the layout is `proportional_cross`: the same
+cross, but each cell has the true proportions of that side of the object's
+bounding box (width × depth × height), all at the same pixel density. The image
+is then not 4:3 (a 4 × 1 × 1 plank gives roughly 10:3) and its width and height
+are multiples of 16; a strip on the right/bottom may be empty. Use `face_rects`
+to find each face. The result must have the **same proportions** as the sent
+image (any resolution).
+
 Each face is an orthographic view of the object from outside, framed to the
 object's bounding box on that side (so the object touches the edges of every
 face). Transparent pixels (alpha 0) are background. Faces are oriented the way
@@ -91,8 +103,9 @@ FRONT, and so on. Unused cells are transparent.
 
 ### Response
 
-The texture must come back in the **same layout and orientation** (any size
-with a 4:3 ratio, e.g. 2048×1536; other cubemap layouts are detected too). Each
+The texture must come back in the **same layout and orientation**, at any
+size with the same proportions (e.g. 2048×1536 for the 4:3 cross; for the 4:3
+cross other cubemap layouts are detected too). Each
 face of the result is stretched over the matching side of the object, so keep
 each face's content aligned with the silhouette in the request.
 

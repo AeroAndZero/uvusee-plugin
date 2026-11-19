@@ -78,7 +78,7 @@ def read_mesh(mesh):
             loop_verts, loop_poly)
 
 
-def object_bounds(obj, front_axis, uniform):
+def object_bounds(obj, front_axis, uniform, flat_fix=True):
     """Bounding box used by both capture and projection.
 
     It covers the mesh itself AND the result of its modifiers, so e.g. a
@@ -89,7 +89,7 @@ def object_bounds(obj, front_axis, uniform):
     obj.data.vertices.foreach_get("co", co)
     corners = np.array([tuple(c) for c in obj.bound_box], dtype=np.float64)
     return projection.compute_bounds(np.vstack([co.reshape(-1, 3), corners]),
-                                     front_axis, uniform)
+                                     front_axis, uniform, flat_fix)
 
 
 def apply_cubemap(obj, image, material, *, layout, mode, front_axis, uniform,

@@ -87,6 +87,74 @@ FRONT_AXIS_MATRICES = {
 }
 
 
+def layout_rects(layout):
+    """Where each side sits in the image, as UV rectangles:
+    {side: (u0, v0, du, dv, quarter_turns)} with (u0, v0) the bottom-left corner.
+
+    `layout` is a key of LAYOUTS, or already such a dict (e.g. from
+    net_uv_rects) and is then returned unchanged.
+    """
+    if isinstance(layout, dict):
+        return dict(layout)
+    cols, rows, cells = LAYOUTS[layout]
+    return {side: (col / cols, (rows - 1 - row) / rows, 1.0 / cols, 1.0 / rows, turns)
+            for side, (col, row, turns) in cells.items()}
+
+
+def grid_pixel_rects(layout, face_px):
+    """Pixel rectangles (x, y, w, h), top-left origin, of a grid layout."""
+    cols, rows, cells = LAYOUTS[layout]
+    return (cols * face_px, rows * face_px,
+            {side: (col * face_px, row * face_px, face_px, face_px)
+             for side, (col, row, _turns) in cells.items()})
+
+
+def proportional_net(extent_x, extent_y, extent_z, budget_px, max_side, min_px=8, multiple=16):
+    """The object's bounding box unfolded as a cross, every side at its true
+    proportions and the same pixel density ("Keep Proportions").
+
+        x = width (left-right), y = depth (front-back), z = height.
+
+                [ TOP    x*y ]
+        [LEFT y*z][FRONT x*z][RIGHT y*z][BACK x*z]
+                [ BOTTOM x*y ]
+
+    The scale is chosen so the image has about `budget_px` pixels (the same as
+    the 4:3 cross would) and no side longer than `max_side`. The total size is
+    rounded up to a multiple of `multiple` (friendlier for image models); the
+    extra strip on the right/bottom is left empty.
+
+    Returns (width, height, {side: (x, y, w, h)}) in pixels, top-left origin.
+    """
+    x, y, z = (max(float(e), 0.0) for e in (extent_x, extent_y, extent_z))
+    biggest = max(x, y, z, 1e-9)
+    # Keep degenerate (flat) sides at a few pixels rather than zero.
+    x, y, z = (max(e, biggest * 1e-3) for e in (x, y, z))
+    net_w, net_h = 2 * x + 2 * y, z + 2 * y
+    scale = min((budget_px / (net_w * net_h)) ** 0.5, max_side / max(net_w, net_h))
+
+    def px(v):
+        return max(min_px, int(round(v * scale)))
+
+    col_w = [px(y), px(x), px(y), px(x)]
+    row_h = [px(y), px(z), px(y)]
+    col_x = [sum(col_w[:i]) for i in range(4)]
+    row_y = [sum(row_h[:i]) for i in range(3)]
+    cells = {"TOP": (1, 0), "LEFT": (0, 1), "FRONT": (1, 1), "RIGHT": (2, 1),
+             "BACK": (3, 1), "BOTTOM": (1, 2)}
+    rects = {side: (col_x[c], row_y[r], col_w[c], row_h[r]) for side, (c, r) in cells.items()}
+
+    def up(v):
+        return -(-v // multiple) * multiple
+    return up(sum(col_w)), up(sum(row_h)), rects
+
+
+def net_uv_rects(width, height, pixel_rects):
+    """Pixel rectangles (top-left origin) -> UV rectangles for compute_uvs."""
+    return {side: (x / width, 1.0 - (y + h) / height, w / width, h / height, 0)
+            for side, (x, y, w, h) in pixel_rects.items()}
+
+
 def detect_layout(width, height, tolerance=0.02):
     """Guess the layout from the image's aspect ratio. Returns a key or None."""
     if not width or not height:
@@ -103,7 +171,7 @@ def looks_equirectangular(width, height):
     return bool(width and height) and abs(width / height - 2.0) < 0.04
 
 
-def compute_bounds(points, front_axis="NEG_Y", uniform=False):
+def compute_bounds(points, front_axis="NEG_Y", uniform=False, flat_fix=True):
     """Centre and half-size of the points' bounding box, in projection space.
 
     The capture and the projection must use the very same box, otherwise the
@@ -116,10 +184,11 @@ def compute_bounds(points, front_axis="NEG_Y", uniform=False):
     half = (hi - lo) / 2.0
     if uniform:
         half[:] = half.max()          # same scale on every axis
-    biggest = half.max()
-    # Flat objects (e.g. a plane): give the flat axis a sensible size so the
-    # side views aren't infinitely thin. No polygon faces those sides anyway.
-    half[half < 1e-9] = biggest if biggest > 1e-9 else 1.0
+    if flat_fix:
+        biggest = half.max()
+        # Flat objects (e.g. a plane): give the flat axis a sensible size so the
+        # side views aren't infinitely thin. No polygon faces those sides anyway.
+        half[half < 1e-9] = biggest if biggest > 1e-9 else 1.0
     return mid, half
 
 
@@ -134,6 +203,7 @@ def compute_uvs(co, poly_normals, poly_centers, loop_verts, loop_poly, *,
     poly_centers (P, 3) polygon centres
     loop_verts   (L,)   vertex index of each loop
     loop_poly    (L,)   polygon index of each loop
+    layout       a LAYOUTS key, or UV rectangles from net_uv_rects()
     mode         "BOX": each polygon takes the side its normal faces most,
                         and is projected straight (orthographically) onto it.
                  "SPHERE": each polygon takes the side its direction from the
@@ -147,10 +217,9 @@ def compute_uvs(co, poly_normals, poly_centers, loop_verts, loop_poly, *,
     """
     rotations = rotations or {}
     flips = flips or {}
-    cols, rows, cells = LAYOUTS[layout]
-    cells = dict(cells)
+    rects = layout_rects(layout)
     if swap_front_back:
-        cells["FRONT"], cells["BACK"] = cells["BACK"], cells["FRONT"]
+        rects["FRONT"], rects["BACK"] = rects["BACK"], rects["FRONT"]
 
     # 1. Move everything into projection space and normalise the bounding box
     #    to the cube [-1, 1]^3, so each side's image covers that whole side.
@@ -177,8 +246,6 @@ def compute_uvs(co, poly_normals, poly_centers, loop_verts, loop_poly, *,
     uvs = np.zeros((len(loop_verts), 2), dtype=np.float64)
 
     width, height = image_size
-    pad_u = padding_px / (width / cols) if width else 0.0
-    pad_v = padding_px / (height / rows) if height else 0.0
 
     for index, side in enumerate(SIDES):
         mask = loop_side == index
@@ -203,16 +270,17 @@ def compute_uvs(co, poly_normals, poly_centers, loop_verts, loop_poly, *,
         if flips.get(side):
             u = 1.0 - u
 
-        col, row, turns = cells[side]
+        u0, v0, du, dv, turns = rects[side]
         for _ in range((turns + rotations.get(side, 0)) % 4):
             u, v = 1.0 - v, u                 # rotate 90 degrees counter-clockwise
 
         # Shrink slightly so texture filtering never samples the neighbour cell.
+        pad_u = min(0.49, padding_px / (du * width)) if width else 0.0
+        pad_v = min(0.49, padding_px / (dv * height)) if height else 0.0
         u = pad_u + u * (1.0 - 2.0 * pad_u)
         v = pad_v + v * (1.0 - 2.0 * pad_v)
 
-        # Image rows count from the top, UVs count from the bottom.
-        uvs[mask, 0] = (col + u) / cols
-        uvs[mask, 1] = (rows - 1 - row + v) / rows
+        uvs[mask, 0] = u0 + u * du
+        uvs[mask, 1] = v0 + v * dv
 
     return uvs.astype(np.float32), poly_side

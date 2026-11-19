@@ -7,12 +7,14 @@ from the main thread, so the thread never touches bpy; it just fills in
 fields on the Job, and the timer (which runs on the main thread) acts on them.
 """
 
+import json
 import os
 import tempfile
 import threading
 import time
 
 import bpy
+import numpy as np
 
 from . import client, projection, providers, texturing
 
@@ -161,15 +163,18 @@ def _worker(job, request):
                             max_run_time=request.get("max_run_time", 0),
                             on_status=job.update,
                             is_cancelled=job.cancel_event.is_set)
-        call = lambda: api.request_texture(request["image_png"], request["prompt"],  # noqa: E731
-                                           request["face_size"], request["faces"])
+        call = lambda: api.request_texture(  # noqa: E731
+            request["image_png"], request["prompt"], request["face_size"], request["faces"],
+            layout=request["layout_name"],
+            extra_fields={"face_rects": json.dumps(request["face_rects"])})
     else:
         api = providers.HostedClient(request["provider"], request["api_key"], request["model"],
                                      timeout=request["timeout"], quality=request["quality"],
+                                     upload_copy=request.get("upload_copy", ""),
                                      on_status=job.update,
                                      is_cancelled=job.cancel_event.is_set)
         call = lambda: api.generate(request["image_png"], request["prompt"],  # noqa: E731
-                                    *request["size"])
+                                    request["plan"])
     try:
         data = call()
     except client.Cancelled:
@@ -230,32 +235,54 @@ def _apply(job):
         bpy.data.images.remove(image)
         job.finish("failed", "The server's reply couldn't be opened as an image")
         return True
-    fit_to = job.options.get("fit_to")
-    if fit_to:
-        # Hosted models pick their own resolution (e.g. 1200x896 for 4:3).
-        # Stretch it back to the capture's exact size so every view lines up.
-        target_w, target_h = fit_to
-        if abs((width / height) / (target_w / target_h) - 1.0) > 0.06:
-            bpy.data.images.remove(image)
-            job.finish("failed", f"{job.provider_label} returned a {width}×{height} image "
-                                 "instead of a 4:3 one, so it can't be projected")
-            return True
-        if (width, height) != (target_w, target_h):
-            image.scale(target_w, target_h)
-            width, height = target_w, target_h
-    layout = projection.detect_layout(width, height)
-    if layout is None:
+    opts = job.options
+    sent = opts["layout"]                          # the layout of the capture we sent
+    cap_w, cap_h = sent["size"]
+    who = job.provider_label or "The server"
+    canvas = opts.get("canvas")
+
+    def shape_error(expected_w, expected_h):
         bpy.data.images.remove(image)
-        job.finish("failed", f"The server returned a {width}×{height} image; expected a "
-                             "4:3 cross (or another cubemap layout)")
+        job.finish("failed", f"{who} returned a {width}×{height} image, but a picture shaped "
+                             f"like the {expected_w}×{expected_h} one it was sent is needed")
         return True
+
+    if canvas:
+        # Hosted model: it answered at its own resolution for the (possibly
+        # padded) canvas we sent. Scale back to the canvas, crop the capture out.
+        cw, ch, ox, oy = canvas
+        if abs((width / height) / (cw / ch) - 1.0) > 0.06:
+            return shape_error(cw, ch)
+        if (width, height) != (cw, ch):
+            image.scale(cw, ch)
+        if (cw, ch) != (cap_w, cap_h):
+            image = _crop(image, ox, oy, cap_w, cap_h)
+        width, height = cap_w, cap_h
+        layout = sent["uv"]
+    elif sent["name"] == "proportional_cross":
+        # Custom server with the Keep Proportions layout: any resolution with
+        # the same shape works; scale it to the capture's size.
+        if abs((width / height) / (cap_w / cap_h) - 1.0) > 0.06:
+            return shape_error(cap_w, cap_h)
+        if (width, height) != (cap_w, cap_h):
+            image.scale(cap_w, cap_h)
+            width, height = cap_w, cap_h
+        layout = sent["uv"]
+    else:
+        # Custom server with the 4:3 cross: any cubemap layout is accepted.
+        layout = projection.detect_layout(width, height)
+        if layout is None:
+            bpy.data.images.remove(image)
+            job.finish("failed", f"The server returned a {width}×{height} image; expected a "
+                                 "4:3 cross (or another cubemap layout)")
+            return True
+    image.name = f"AI Texture {obj.name}"
     image.pack()                                   # keep it inside the .blend
     try:
         os.remove(path)
     except OSError:
         pass
 
-    opts = job.options
     material = texturing.ensure_material(image, opts["shading"], key=obj,
                                          name=f"AI Texture {obj.name}")
     error = texturing.apply_cubemap(
@@ -272,6 +299,36 @@ def _apply(job):
     _undo_push("AI Texture")
     job.finish("done", f"Textured '{obj.name}' in {job.elapsed:.0f} s")
     return True
+
+
+def _crop(image, x, y, width, height):
+    """A new image holding the (x, y, width, height) rectangle of `image`
+    (top-left origin). Goes through a PNG file so it packs like a loaded image."""
+    full_w, full_h = image.size
+    pixels = np.empty(full_w * full_h * 4, dtype=np.float32)
+    image.pixels.foreach_get(pixels)
+    pixels = pixels.reshape(full_h, full_w, 4)                 # bottom row first
+    bottom = full_h - (y + height)
+    part = np.ascontiguousarray(pixels[bottom:bottom + height, x:x + width])
+
+    fd, path = tempfile.mkstemp(prefix="ai_texture_crop_", suffix=".png")
+    os.close(fd)
+    tmp = bpy.data.images.new("AI Texture crop", width, height, alpha=True)
+    try:
+        tmp.pixels.foreach_set(part.ravel())
+        tmp.filepath_raw = path
+        tmp.file_format = "PNG"
+        tmp.save()
+    finally:
+        bpy.data.images.remove(tmp)
+    cropped = bpy.data.images.load(path)
+    cropped.pack()
+    bpy.data.images.remove(image)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return cropped
 
 
 def _undo_push(message):
