@@ -125,8 +125,12 @@ While polling, a dropped connection or a 502/503/504 is retried up to 6
 times with growing pauses (the job keeps running on the server), and a 404
 means the server lost the job (e.g. it restarted).
 
-The timeout in the preferences (default 300 s) limits how long a job may
-**run**. Time waiting in the queue doesn't count; the user can press Cancel.
+As long as the server keeps answering status checks with `queued` or
+`running`, the add-on keeps waiting, however long the job takes; the user can
+press Cancel at any time. *Response Timeout* (default 300 s) only applies to a
+single request that gets no answer (e.g. the upload, or a server that answers
+synchronously). *Max Job Time* (default 0 = no limit) can cap how long a job
+may run once the server reports it as `running`.
 
 On Cancel the add-on sends `DELETE status_url` once, so a server that
 supports it can drop the job. Servers without that endpoint can ignore it.

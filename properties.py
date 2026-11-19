@@ -107,10 +107,19 @@ class AITexPreferences(bpy.types.AddonPreferences):
         subtype="PASSWORD",
     )
     timeout: IntProperty(
-        name="Timeout",
-        description="Give up if generating takes longer than this many seconds. "
-                    "Time spent waiting in a custom server's queue doesn't count",
+        name="Response Timeout",
+        description="Give up if a request gets no answer for this many seconds: the "
+                    "upload to a custom server, or the whole call to ChatGPT / Nano "
+                    "Banana. A custom server that keeps reporting 'queued' or "
+                    "'running' is waited for as long as it takes",
         default=300, min=10, max=3600,
+    )
+    max_job_minutes: IntProperty(
+        name="Max Job Time",
+        description="Stop waiting if a job has been running on the custom server for "
+                    "longer than this many minutes. 0 = no limit (you can always "
+                    "press Cancel)",
+        default=0, min=0, max=24 * 60,
     )
     poll_interval: FloatProperty(
         name="Check Every",
@@ -130,6 +139,7 @@ class AITexPreferences(bpy.types.AddonPreferences):
             box.prop(self, "server_url")
             box.prop(self, "api_key")
             box.prop(self, "poll_interval", text="Check Every (s)")
+            box.prop(self, "max_job_minutes", text="Max Job Time (min, 0 = no limit)")
             box.label(text="See README.md inside the add-on for the request/response format.",
                       icon="INFO")
         else:
@@ -152,7 +162,7 @@ class AITexPreferences(bpy.types.AddonPreferences):
                            f"{info['long']}", icon="INFO")
             col.label(text="and is billed to your API key.", icon="BLANK1")
 
-        layout.prop(self, "timeout", text="Timeout (s)")
+        layout.prop(self, "timeout", text="Response Timeout (s)")
         layout.label(text="API keys are stored unencrypted in Blender's preferences.",
                      icon="LOCKED")
 

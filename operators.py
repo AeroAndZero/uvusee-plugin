@@ -108,6 +108,7 @@ class AITEX_OT_generate(bpy.types.Operator):
             request.update({
                 "image_png": png, "server_url": url, "api_key": prefs.api_key,
                 "poll_interval": prefs.poll_interval,
+                "max_run_time": prefs.max_job_minutes * 60,
             })
         jobs.start(job, request)
         where = providers.PROVIDERS[provider]["label"] if hosted else "the AI server"

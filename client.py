@@ -138,10 +138,16 @@ def _number(value, lo=None, hi=None):
 
 class Client:
     def __init__(self, server_url, api_key="", timeout=300.0, poll_interval=2.0,
-                 on_status=None, is_cancelled=None, max_retries=6):
+                 on_status=None, is_cancelled=None, max_retries=6, max_run_time=0):
         self.server_url = server_url
         self.api_key = api_key
-        self.timeout = timeout              # max time a job may RUN (queue time is free)
+        # How long ONE request may go without an answer (e.g. the upload, or a
+        # server that answers synchronously). A server that keeps answering
+        # status checks with "queued"/"running" is waited for as long as it takes.
+        self.timeout = timeout
+        # Optional hard limit on how long a job may run on the server (seconds,
+        # counted from the first "running" status). 0 = no limit.
+        self.max_run_time = max_run_time
         self.poll_interval = poll_interval
         self.max_retries = max_retries
         self.on_status = on_status or (lambda info: None)
@@ -190,8 +196,8 @@ class Client:
                 raise Cancelled()
             if self.run_deadline is not None and time.monotonic() > self.run_deadline:
                 raise ServerError(f"The job has been running on the server for more than "
-                                  f"{self.timeout:.0f} s. Increase the timeout in the "
-                                  "add-on preferences if that's normal")
+                                  f"{self.max_run_time / 60:g} min, the Max Job Time set in "
+                                  "the add-on preferences")
             time.sleep(0.1)
 
     # -- understanding replies -------------------------------------------------
@@ -306,8 +312,8 @@ class Client:
             else:
                 _kind, url, info = result
                 self.status_url = url
-                if info["phase"] != "queued" and self.run_deadline is None:
-                    self.run_deadline = time.monotonic() + self.timeout
+                if info["phase"] != "queued" and self.run_deadline is None and self.max_run_time:
+                    self.run_deadline = time.monotonic() + self.max_run_time
                 # Check often while running; while queued and nothing changes,
                 # gradually slow down (up to 5x the interval) to go easy on the server.
                 if info != last_info or info["phase"] != "queued":

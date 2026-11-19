@@ -158,6 +158,7 @@ def _worker(job, request):
         api = client.Client(request["server_url"], request["api_key"],
                             timeout=request["timeout"],
                             poll_interval=request["poll_interval"],
+                            max_run_time=request.get("max_run_time", 0),
                             on_status=job.update,
                             is_cancelled=job.cancel_event.is_set)
         call = lambda: api.request_texture(request["image_png"], request["prompt"],  # noqa: E731
