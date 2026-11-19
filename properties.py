@@ -1,11 +1,20 @@
-"""Settings: server details in the add-on preferences (shared by every
-.blend file), everything else on the scene (saved with the .blend)."""
+"""Settings: AI provider, keys and server details in the add-on preferences
+(shared by every .blend file), everything else on the scene (saved with the .blend)."""
 
 import bpy
 from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
                        PointerProperty, StringProperty)
 
+from . import client, providers
+
 ADDON_ID = __package__
+
+PROVIDER_ITEMS = [
+    ("CUSTOM", "Custom Server", "Your own server (see README.md for the API)", "URL", 0),
+    ("OPENAI", "ChatGPT", "OpenAI's GPT Image models, with your OpenAI API key", "SHADERFX", 1),
+    ("GEMINI", "Nano Banana", "Google's Gemini image models, with your Gemini API key",
+     "SHADERFX", 2),
+]
 
 
 def get_prefs(context=None):
@@ -13,9 +22,79 @@ def get_prefs(context=None):
     return addon.preferences if addon else None
 
 
+def provider_key(prefs, provider=None):
+    """The API key for a hosted provider: the preference, else an environment
+    variable (OPENAI_API_KEY / GEMINI_API_KEY / GOOGLE_API_KEY)."""
+    provider = provider or prefs.provider
+    typed = {"OPENAI": prefs.openai_api_key, "GEMINI": prefs.gemini_api_key}.get(provider, "")
+    return typed.strip() or providers.key_from_env(provider)
+
+
+def provider_problem(prefs):
+    """Why Generate can't run with the current provider settings, or None."""
+    if prefs is None:
+        return "Add-on preferences not found"
+    if prefs.provider == "CUSTOM":
+        url = prefs.server_url.strip()
+        if not url:
+            return "Set the server URL in the add-on preferences"
+        return client.check_url(url)
+    label = providers.PROVIDERS[prefs.provider]["label"]
+    if not provider_key(prefs):
+        return f"Add your {label} API key in the add-on preferences"
+    model = prefs.openai_model if prefs.provider == "OPENAI" else prefs.gemini_model
+    if not model.strip():
+        return f"Set the {label} model in the add-on preferences"
+    return None
+
+
 class AITexPreferences(bpy.types.AddonPreferences):
     bl_idname = ADDON_ID
 
+    provider: EnumProperty(
+        name="AI Provider",
+        description="Where the six views are sent to be textured",
+        items=PROVIDER_ITEMS,
+        default="CUSTOM",
+    )
+
+    # --- ChatGPT (OpenAI) ------------------------------------------------------
+    openai_api_key: StringProperty(
+        name="OpenAI API Key",
+        description="From platform.openai.com/api-keys. If empty, the OPENAI_API_KEY "
+                    "environment variable is used",
+        subtype="PASSWORD",
+    )
+    openai_model: StringProperty(
+        name="Model",
+        description="GPT Image model. It must support custom sizes for the 4:3 layout, "
+                    "e.g. gpt-image-2.5-sunburst (best for precise edits) or "
+                    "gpt-image-2.5-flare (faster)",
+        default=providers.PROVIDERS["OPENAI"]["default_model"],
+    )
+    openai_quality: EnumProperty(
+        name="Quality",
+        description="Higher quality costs more and takes longer",
+        items=[("low", "Low", ""), ("medium", "Medium", ""), ("high", "High", ""),
+               ("auto", "Auto", "Let OpenAI choose")],
+        default="medium",
+    )
+
+    # --- Nano Banana (Google Gemini) --------------------------------------------
+    gemini_api_key: StringProperty(
+        name="Gemini API Key",
+        description="From aistudio.google.com/apikey. If empty, the GEMINI_API_KEY "
+                    "(or GOOGLE_API_KEY) environment variable is used",
+        subtype="PASSWORD",
+    )
+    gemini_model: StringProperty(
+        name="Model",
+        description="Gemini image model, e.g. gemini-nano-banana-2.1 (Nano Banana 2.1) "
+                    "or gemini-3-pro-image (Nano Banana Pro)",
+        default=providers.PROVIDERS["GEMINI"]["default_model"],
+    )
+
+    # --- Custom server ---------------------------------------------------------
     server_url: StringProperty(
         name="Server URL",
         description="Address the captured views are POSTed to, "
@@ -29,8 +108,8 @@ class AITexPreferences(bpy.types.AddonPreferences):
     )
     timeout: IntProperty(
         name="Timeout",
-        description="Give up if a job runs on the server for longer than this many "
-                    "seconds. Time spent waiting in the server's queue doesn't count",
+        description="Give up if generating takes longer than this many seconds. "
+                    "Time spent waiting in a custom server's queue doesn't count",
         default=300, min=10, max=3600,
     )
     poll_interval: FloatProperty(
@@ -43,14 +122,39 @@ class AITexPreferences(bpy.types.AddonPreferences):
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
-        layout.prop(self, "server_url")
-        layout.prop(self, "api_key")
+        layout.use_property_decorate = False
+        layout.prop(self, "provider")
+
+        box = layout.box()
+        if self.provider == "CUSTOM":
+            box.prop(self, "server_url")
+            box.prop(self, "api_key")
+            box.prop(self, "poll_interval", text="Check Every (s)")
+            box.label(text="See README.md inside the add-on for the request/response format.",
+                      icon="INFO")
+        else:
+            info = providers.PROVIDERS[self.provider]
+            if self.provider == "OPENAI":
+                box.prop(self, "openai_api_key", text="API Key")
+                box.prop(self, "openai_model")
+                box.prop(self, "openai_quality")
+                typed = self.openai_api_key
+            else:
+                box.prop(self, "gemini_api_key", text="API Key")
+                box.prop(self, "gemini_model")
+                typed = self.gemini_api_key
+            if not typed.strip() and providers.key_from_env(self.provider):
+                box.label(text=f"Using the key from ${info['env'][0]}", icon="CHECKMARK")
+            row = box.row()
+            row.operator("wm.url_open", text="Get an API Key", icon="URL").url = info["key_page"]
+            col = box.column(align=True)
+            col.label(text=f"Each Generate sends the six views and your prompt to "
+                           f"{info['long']}", icon="INFO")
+            col.label(text="and is billed to your API key.", icon="BLANK1")
+
         layout.prop(self, "timeout", text="Timeout (s)")
-        layout.prop(self, "poll_interval", text="Check Every (s)")
-        col = layout.column(align=True)
-        col.label(text="The API key is stored unencrypted in Blender's preferences.",
-                  icon="INFO")
-        col.label(text="See README.md inside the add-on for the request/response format.")
+        layout.label(text="API keys are stored unencrypted in Blender's preferences.",
+                     icon="LOCKED")
 
 
 LAYOUT_ITEMS = [

@@ -2,8 +2,8 @@
 
 import bpy
 
-from . import capture, client, jobs, projection, texturing
-from .properties import get_prefs
+from . import capture, client, jobs, projection, providers, texturing
+from .properties import get_prefs, provider_key, provider_problem
 
 
 def _capture(context, obj, s):
@@ -39,8 +39,9 @@ class AITEX_OT_generate(bpy.types.Operator):
         if not context.scene.ai_texture.prompt.strip():
             cls.poll_message_set("Type a prompt first")
             return False
-        if prefs is None or not prefs.server_url.strip():
-            cls.poll_message_set("Set the server URL in the add-on preferences")
+        problem = provider_problem(prefs)
+        if problem:
+            cls.poll_message_set(problem)
             return False
         return True
 
@@ -48,9 +49,12 @@ class AITEX_OT_generate(bpy.types.Operator):
         s = context.scene.ai_texture
         prefs = get_prefs(context)
         obj = _active_mesh(context)
-        url = prefs.server_url.strip()
+        provider = prefs.provider
+        hosted = provider != "CUSTOM"
+        url = providers.OPENAI_EDIT_URL if provider == "OPENAI" else \
+            providers.GEMINI_URL if provider == "GEMINI" else prefs.server_url.strip()
 
-        problem = client.check_url(url)
+        problem = provider_problem(prefs)
         if problem:
             self.report({"ERROR"}, problem)
             return {"CANCELLED"}
@@ -69,21 +73,45 @@ class AITEX_OT_generate(bpy.types.Operator):
             self.report({"ERROR"}, f"Capturing the views failed: {err}")
             return {"CANCELLED"}
         s.last_capture = image
+        width, height = image.size
 
         job = jobs.Job(obj.name, context.scene.name, bounds, {
             "front_axis": s.front_axis, "uniform": s.uniform,
             "padding": s.padding, "shading": s.shading,
-        })
+            # Hosted models return their own resolution; stretch it back to the
+            # capture's exact size so it lines up with the views we sent.
+            "fit_to": (width, height) if hosted else None,
+        }, provider_label=providers.PROVIDERS[provider]["label"] if hosted else "")
 
-        # Start the worker to send the job to the server for processing. 
-        context_prompt = "You are given six sides of an object. the top side is on the top, the bottom side is on the bottom. Th left, right, forward and backward sides are on the middle. You have to add color to the object. Do not add any extra objects, only paint on top of the given object. " + s.prompt.strip()
-        jobs.start(job, {
-            "server_url": url, "api_key": prefs.api_key,
-            "timeout": prefs.timeout, "poll_interval": prefs.poll_interval,
-            "image_png": png, "prompt": context_prompt,
+        # Start the worker to send the job to the server for processing.
+        context_prompt = "You are given six sides of an object. the top side is on the top, the bottom side is on the bottom. Th left, right, forward and backward sides are on the middle. You have to add color to the object. Do not add any extra objects, only paint on top of the given object. "
+        if hosted:
+            context_prompt += providers.ALIGNMENT_PROMPT
+        context_prompt += s.prompt.strip()
+
+        request = {
+            "provider": provider,
+            "timeout": prefs.timeout,
+            "prompt": context_prompt,
             "face_size": int(s.face_size), "faces": capture.faces_description(),
-        })
-        self.report({"INFO"}, f"Sent '{obj.name}' to the AI server")
+        }
+        if hosted:
+            # Hosted models handle transparency poorly: send a plain background.
+            request.update({
+                "image_png": capture.flatten_png(image),
+                "api_key": provider_key(prefs),
+                "model": (prefs.openai_model if provider == "OPENAI" else prefs.gemini_model).strip(),
+                "quality": prefs.openai_quality,
+                "size": (width, height),
+            })
+        else:
+            request.update({
+                "image_png": png, "server_url": url, "api_key": prefs.api_key,
+                "poll_interval": prefs.poll_interval,
+            })
+        jobs.start(job, request)
+        where = providers.PROVIDERS[provider]["label"] if hosted else "the AI server"
+        self.report({"INFO"}, f"Sent '{obj.name}' to {where}")
         return {"FINISHED"}
 
 

@@ -14,7 +14,7 @@ import time
 
 import bpy
 
-from . import client, projection, texturing
+from . import client, projection, providers, texturing
 
 ACTIVE = {"uploading", "waiting", "received"}
 
@@ -25,8 +25,9 @@ def _clock(seconds):
 
 
 class Job:
-    def __init__(self, object_name, scene_name, bounds, options):
+    def __init__(self, object_name, scene_name, bounds, options, provider_label=""):
         self.object_name = object_name
+        self.provider_label = provider_label   # "ChatGPT" / "Nano Banana", "" = custom server
         self.scene_name = scene_name
         self.bounds = bounds          # the capture's bounding box, reused when applying
         self.options = options        # projection settings at the time of sending
@@ -77,7 +78,7 @@ class Job:
         self.position = info.get("position")
         self.progress = info.get("progress")
         self.server_message = info.get("message", "")
-        if phase != "uploading":
+        if phase != "uploading" and info.get("polled", True):
             self.last_contact = now
 
     def describe(self):
@@ -88,6 +89,9 @@ class Job:
         phase = self.phase
         if phase == "uploading":
             icon, head = "EXPORT", "Uploading views to the server…"
+        elif phase == "running" and self.provider_label:
+            # Hosted models answer in one go: no queue, no progress, just a timer.
+            icon, head = "SHADERFX", f"Generating with {self.server_message or self.provider_label}…"
         elif phase == "queued":
             icon = "SORTTIME"
             if self.position is None:
@@ -105,7 +109,8 @@ class Job:
         elif phase == "retrying":
             attempt, most = self.retry or (None, None)
             icon = "ERROR"
-            head = f"Lost contact, retrying ({attempt}/{most})"
+            head = (f"Retrying ({attempt}/{most})" if self.provider_label
+                    else f"Lost contact, retrying ({attempt}/{most})")
             if self.server_message:
                 head += f": {self.server_message}"
         else:
@@ -149,14 +154,23 @@ def cancel():
 
 
 def _worker(job, request):
-    api = client.Client(request["server_url"], request["api_key"],
-                        timeout=request["timeout"],
-                        poll_interval=request["poll_interval"],
-                        on_status=job.update,
-                        is_cancelled=job.cancel_event.is_set)
+    if request.get("provider", "CUSTOM") == "CUSTOM":
+        api = client.Client(request["server_url"], request["api_key"],
+                            timeout=request["timeout"],
+                            poll_interval=request["poll_interval"],
+                            on_status=job.update,
+                            is_cancelled=job.cancel_event.is_set)
+        call = lambda: api.request_texture(request["image_png"], request["prompt"],  # noqa: E731
+                                           request["face_size"], request["faces"])
+    else:
+        api = providers.HostedClient(request["provider"], request["api_key"], request["model"],
+                                     timeout=request["timeout"], quality=request["quality"],
+                                     on_status=job.update,
+                                     is_cancelled=job.cancel_event.is_set)
+        call = lambda: api.generate(request["image_png"], request["prompt"],  # noqa: E731
+                                    *request["size"])
     try:
-        data = api.request_texture(request["image_png"], request["prompt"],
-                                   request["face_size"], request["faces"])
+        data = call()
     except client.Cancelled:
         api.cancel_remote()          # lets the server drop the job, if it supports that
         return
@@ -215,6 +229,19 @@ def _apply(job):
         bpy.data.images.remove(image)
         job.finish("failed", "The server's reply couldn't be opened as an image")
         return True
+    fit_to = job.options.get("fit_to")
+    if fit_to:
+        # Hosted models pick their own resolution (e.g. 1200x896 for 4:3).
+        # Stretch it back to the capture's exact size so every view lines up.
+        target_w, target_h = fit_to
+        if abs((width / height) / (target_w / target_h) - 1.0) > 0.06:
+            bpy.data.images.remove(image)
+            job.finish("failed", f"{job.provider_label} returned a {width}×{height} image "
+                                 "instead of a 4:3 one, so it can't be projected")
+            return True
+        if (width, height) != (target_w, target_h):
+            image.scale(target_w, target_h)
+            width, height = target_w, target_h
     layout = projection.detect_layout(width, height)
     if layout is None:
         bpy.data.images.remove(image)

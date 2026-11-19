@@ -158,6 +158,38 @@ def capture_views(obj, size, front_axis, uniform, style, progress=None):
     return image, png_bytes, bounds
 
 
+def flatten_png(image, color=(0.0, 0.0, 0.0)):
+    """PNG bytes of `image` laid over a plain background (no transparency).
+
+    Hosted image models tend to treat transparent areas unpredictably, so they
+    get the views on solid black instead (the prompt tells them so).
+    """
+    width, height = image.size
+    pixels = np.empty(width * height * 4, dtype=np.float32)
+    image.pixels.foreach_get(pixels)
+    pixels = pixels.reshape(-1, 4)
+    alpha = pixels[:, 3:4]
+    pixels[:, :3] = pixels[:, :3] * alpha + np.array(color, dtype=np.float32) * (1.0 - alpha)
+    pixels[:, 3] = 1.0
+
+    path = os.path.join(tempfile.mkdtemp(prefix="ai_texture_"), "cubemap_flat.png")
+    flat = bpy.data.images.new("AI Capture flat", width, height, alpha=False)
+    try:
+        flat.pixels.foreach_set(pixels.ravel())
+        flat.filepath_raw = path
+        flat.file_format = "PNG"
+        flat.save()
+    finally:
+        bpy.data.images.remove(flat)
+    with open(path, "rb") as f:
+        data = f.read()
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return data
+
+
 def faces_description():
     """Where each side sits in the sent image, for the server: {"front": [col, row]}."""
     _cols, _rows, cells = projection.LAYOUTS[LAYOUT]

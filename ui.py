@@ -10,7 +10,7 @@ import textwrap
 import bpy
 
 from . import jobs, projection
-from .properties import ADDON_ID, get_prefs
+from .properties import ADDON_ID, get_prefs, provider_problem
 
 
 class _AITexPanel:
@@ -44,6 +44,26 @@ def _thumbnail(layout, image, label):
         col.label(text=image.name, icon="IMAGE_DATA")
 
 
+def _draw_provider(layout, prefs):
+    """Provider drop-down, settings button, and a one-line readiness check."""
+    row = layout.row(align=True)
+    row.prop(prefs, "provider", text="")
+    op = row.operator("preferences.addon_show", text="", icon="PREFERENCES")
+    op.module = ADDON_ID
+
+    problem = provider_problem(prefs)
+    if prefs.provider == "CUSTOM":
+        text = problem or prefs.server_url.strip()
+        icon = "ERROR" if problem else "URL"
+    else:
+        model = prefs.openai_model if prefs.provider == "OPENAI" else prefs.gemini_model
+        text = problem or f"{model.strip()} · key set"
+        icon = "ERROR" if problem else "CHECKMARK"
+    col = layout.column()
+    col.scale_y = 0.8
+    col.label(text=text, icon=icon)
+
+
 class AITEX_PT_main(_AITexPanel, bpy.types.Panel):
     bl_label = "AI Texture"
     bl_idname = "AITEX_PT_main"
@@ -56,6 +76,9 @@ class AITEX_PT_main(_AITexPanel, bpy.types.Panel):
         s = context.scene.ai_texture
         prefs = get_prefs(context)
         job = jobs.current()
+
+        if prefs:
+            _draw_provider(layout, prefs)
 
         try:
             layout.prop(s, "prompt", text="", icon="TEXT", placeholder="Describe the texture…")
@@ -87,14 +110,6 @@ class AITEX_PT_main(_AITexPanel, bpy.types.Panel):
             _thumbnail(row, s.last_capture, "Sent")
             _thumbnail(row, s.last_result, "Received")
 
-        row = layout.row(align=True)
-        url = prefs.server_url.strip() if prefs else ""
-        if url:
-            row.label(text=url, icon="URL")
-        else:
-            row.label(text="No server set", icon="ERROR")
-        op = row.operator("preferences.addon_show", text="", icon="PREFERENCES")
-        op.module = ADDON_ID
 
 
 class AITEX_PT_capture(_AITexPanel, bpy.types.Panel):

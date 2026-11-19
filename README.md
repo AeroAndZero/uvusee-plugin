@@ -1,19 +1,44 @@
-# AI Texture Projector for Blender
+# UVUSee for Blender
 
 Texture a mesh with AI from one prompt. The add-on renders the object from six
-sides, sends the six views to your server as one image, and projects the
-server's answer back onto the object.
+sides, sends the six views as one image to your own server, ChatGPT or Nano
+Banana, and projects the answer back onto the object.
 
 ## Install
 
 Blender 4.2 or newer: **Edit → Preferences → Get Extensions → ⌄ (top right) →
 Install from Disk…** and choose the zip. Then open the add-on's preferences
-(**Add-ons → AI Texture Projector**) and set **Server URL** (and **API Key** if
-your server needs one).
+(**Add-ons → UVUSee**), pick an **AI Provider** and fill in its details.
 
-If the server is not on your own machine, enable **Preferences → System →
-Network → Allow Online Access**. Requests to `localhost`/`127.0.0.1` are always
-allowed.
+Unless the provider is a server on your own machine, enable **Preferences →
+System → Network → Allow Online Access**. Requests to `localhost`/`127.0.0.1`
+are always allowed.
+
+## AI providers
+
+Pick one in the add-on preferences or from the drop-down at the top of the panel.
+
+| Provider | Needs | Default model |
+|----------|-------|---------------|
+| **Custom Server** | Server URL (+ optional API key) | your server (see *Server API* below) |
+| **ChatGPT** | OpenAI API key | `gpt-image-2.5-sunburst` |
+| **Nano Banana** | Gemini API key | `gemini-nano-banana-2.1` |
+
+- If the key field is empty, `OPENAI_API_KEY` or `GEMINI_API_KEY` /
+  `GOOGLE_API_KEY` from the environment is used.
+- The model is a text field because both companies rename models often. For
+  ChatGPT, use a model that accepts custom sizes (GPT Image 2 / 2.5), otherwise
+  the 4:3 layout can't be requested.
+- ChatGPT and Nano Banana are called directly from Blender, once per Generate,
+  and billed to your key. There is no queue: the panel shows a timer until the
+  image arrives. Busy/rate-limited answers (429/500/503) are retried twice.
+- For these two, the views are sent on a plain black background (no
+  transparency), an extra paragraph asks the model to keep every outline in
+  place, and the result is stretched back to the capture's exact size.
+- General image models redraw the whole picture, so the result can drift
+  slightly from the silhouettes and the six views may not match at their
+  edges. A custom server with a geometry-aware pipeline gives the most
+  accurate alignment.
 
 ## Use
 

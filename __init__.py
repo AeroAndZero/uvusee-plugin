@@ -6,7 +6,8 @@ How the pieces fit together:
     ui.py          the panels you see
     operators.py   what the buttons do
     capture.py     renders the object from six sides into one cross image
-    client.py      talks HTTP to the AI server (runs on a background thread)
+    client.py      talks HTTP to a custom AI server (runs on a background thread)
+    providers.py   talks to ChatGPT (OpenAI) and Nano Banana (Google Gemini)
     jobs.py        watches the background request and applies the result
     texturing.py   writes the UV map and material onto the mesh
     projection.py  the pure maths shared by capture and texturing
@@ -16,10 +17,10 @@ How the pieces fit together:
 # the old copies of the other modules. Reloading them here picks up edits.
 if "bpy" in locals():
     import importlib
-    for _mod in (projection, client, texturing, capture, jobs, properties, operators, ui):
+    for _mod in (projection, client, providers, texturing, capture, jobs, properties, operators, ui):
         importlib.reload(_mod)
 else:
-    from . import projection, client, texturing, capture, jobs, properties, operators, ui
+    from . import projection, client, providers, texturing, capture, jobs, properties, operators, ui
 
 import bpy
 
