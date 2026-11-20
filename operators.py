@@ -114,7 +114,7 @@ class AITEX_OT_generate(bpy.types.Operator):
         }, provider_label=providers.PROVIDERS[provider]["label"] if hosted else "")
 
         # Start the worker to send the job to the server for processing.
-        context_prompt = "You are given six sides of an object. the top side is on the top, the bottom side is on the bottom. Th left, right, forward and backward sides are on the middle. You have to add color to the object. Do not add any extra objects, only paint on top of the given object. "
+        context_prompt = "You are given six sides of an object. They are in the order of: TOP, LEFT, FRONT, RIGHT, BACK, BOTTOM. You have to add texture to the object with flat shading. Do not add any extra objects, only paint on top of the given object. keep every outline exactly in place, only change surface colours, leave transparent areas empty."
         if hosted:
             context_prompt += providers.ALIGNMENT_PROMPT
         context_prompt += s.prompt.strip()

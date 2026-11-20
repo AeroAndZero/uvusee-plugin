@@ -239,7 +239,7 @@ class AITexSettings(bpy.types.PropertyGroup):
                     "tall objects fill the image tightly (the image is then not 4:3). "
                     "Existing cubemaps: the same scale on every axis, so shorter "
                     "sides use only the middle part of their square",
-        default=False,
+        default=True,
     )
     padding: FloatProperty(
         name="Edge Padding",
@@ -288,13 +288,13 @@ class AITexSettings(bpy.types.PropertyGroup):
         name="Blend Sharpness",
         description="How strongly the most direct view wins where views overlap. "
                     "Low: smoother blends; high: crisper detail, more visible seams",
-        default=4.0, min=1.0, max=16.0,
+        default=2.0, min=1.0, max=16.0,
     )
     bake_max_angle: FloatProperty(
         name="Max View Angle",
         description="Ignore a view where it sees the surface at a steeper angle than "
                     "this (stretched, unreliable pixels)",
-        default=math.radians(80.0), min=math.radians(30.0), max=math.radians(89.0),
+        default=math.radians(66.0), min=math.radians(30.0), max=math.radians(89.0),
         subtype="ANGLE",
     )
 
