@@ -123,10 +123,121 @@ def plan_layout(obj, size, front_axis, keep_proportions):
                     "uv": projection.net_uv_rects(width, height, rects)}
 
 
-def capture_views(obj, size, front_axis, uniform, style, progress=None):
+def _aim(scene, cam, cam_data, obj, mid, half, side, front_axis, w, h):
+    """Point the capture camera at one side, rendering w x h pixels.
+    Returns True if the picture must be mirrored afterwards."""
+    matrix, ortho, aspect, mirror, clip_start, clip_end = \
+        _camera_for_side(obj, mid, half, side, front_axis)
+    cam.matrix_world = matrix
+    cam_data.ortho_scale = ortho
+    cam_data.clip_start = clip_start * 0.5
+    cam_data.clip_end = clip_end
+    scene.render.resolution_x = w
+    scene.render.resolution_y = h
+    # The side's real shape is `aspect` (width/height); the cell is w x h
+    # pixels. Non-square pixels make up the difference, exactly like the
+    # projection stretches it back. In the proportional layout the cell
+    # already has the side's shape, so this is ~1.
+    pixel = min(max(aspect / (w / h), 1 / 200), 200)
+    scene.render.pixel_aspect_x = max(pixel, 1.0)
+    scene.render.pixel_aspect_y = max(1.0 / pixel, 1.0)
+    return mirror
+
+
+def _render_pixels(scene, path, w, h, mirror):
+    """Render the capture scene to `path` and return (h, w, 4) floats, top row first."""
+    scene.render.filepath = path
+    bpy.ops.render.render(write_still=True, scene=scene.name)
+    img = bpy.data.images.load(path)
+    try:
+        pixels = np.empty(w * h * 4, dtype=np.float32)
+        img.pixels.foreach_get(pixels)
+    finally:
+        bpy.data.images.remove(img)
+    view = pixels.reshape(h, w, 4)[::-1]           # Blender stores bottom row first
+    return view[:, ::-1] if mirror else view
+
+
+LOOKUP_ATTR = "_uvusee_lookup"
+LOOKUP_MAX_SIDE = 2048       # lookup images: up to 2x the view, at most this many pixels
+
+
+def _render_lookups(scene, cam, cam_data, obj, mid, half, front_axis, layout, uv_name, tmpdir):
+    """For Blend & Bake: render each view again as a lookup image whose pixels
+    hold (u, v, cosine, coverage) of the surface seen there.
+
+    A temporary float colour attribute carries u, v (from the bake UV map) and
+    the cosine between the surface normal and this view's direction; Workbench
+    draws it unlit, without anti-aliasing, into a 32-bit EXR, so the values come
+    back exactly. The renderer's depth test decides which surface is visible.
+    """
+    mesh = obj.data
+    nloops = len(mesh.loops)
+    uv = np.empty(nloops * 2, dtype=np.float32)
+    mesh.uv_layers[uv_name].data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2)
+    # Smooth (vertex) normals, not the shading normals: on flat-shaded meshes the
+    # latter are constant per face, which would make the blend jump at every edge.
+    vnormals = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertex_normals.foreach_get("vector", vnormals)
+    loop_verts = np.empty(nloops, dtype=np.int32)
+    mesh.loops.foreach_get("vertex_index", loop_verts)
+    normals = vnormals.reshape(-1, 3)[loop_verts]
+    m3 = np.array(obj.matrix_world.to_3x3(), dtype=np.float64)
+    # Normals transform with the inverse transpose (correct for any scale).
+    world_n = normals @ np.linalg.inv(m3)
+    world_n /= np.maximum(np.linalg.norm(world_n, axis=1, keepdims=True), 1e-12)
+    rot_t = projection.FRONT_AXIS_MATRICES[front_axis].T
+
+    previous_active = mesh.color_attributes.active_color_name
+    attr = mesh.color_attributes.new(LOOKUP_ATTR, "FLOAT_COLOR", "CORNER")
+    data = np.ones((nloops, 4), dtype=np.float32)
+    data[:, 0:2] = uv
+
+    r = scene.render
+    r.image_settings.file_format = "OPEN_EXR"
+    r.image_settings.color_depth = "32"
+    r.image_settings.color_mode = "RGBA"
+    r.dither_intensity = 0.0
+    scene.display.render_aa = "OFF"
+    shading = scene.display.shading
+    shading.light = "FLAT"
+    shading.color_type = "VERTEX"
+    shading.show_cavity = False
+    shading.show_object_outline = False
+    shading.show_specular_highlight = False
+    shading.show_shadows = False
+
+    lookups = {}
+    try:
+        mesh.color_attributes.active_color = attr
+        for side in projection.SIDES:
+            _x, _y, w, h = layout["pixel_rects"][side]
+            scale = min(2.0, LOOKUP_MAX_SIDE / max(w, h))
+            lw, lh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+            view_dir = m3 @ (rot_t @ np.array(projection.SIDE_FRAMES[side][0], dtype=np.float64))
+            view_dir /= np.linalg.norm(view_dir)
+            data[:, 2] = world_n @ view_dir
+            attr.data.foreach_set("color", data.ravel())
+            mesh.update()
+            mirror = _aim(scene, cam, cam_data, obj, mid, half, side, front_axis, lw, lh)
+            lookups[side] = _render_pixels(scene, os.path.join(tmpdir, f"lookup_{side.lower()}.exr"),
+                                           lw, lh, mirror).copy()
+    finally:
+        mesh.color_attributes.remove(mesh.color_attributes[LOOKUP_ATTR])
+        if previous_active and previous_active in mesh.color_attributes:
+            mesh.color_attributes.active_color = mesh.color_attributes[previous_active]
+        mesh.update()
+    return lookups
+
+
+def capture_views(obj, size, front_axis, uniform, style, progress=None, bake_uv=None):
     """Render six views of `obj` and assemble them into one image: the 4:3
     horizontal cross, or with `uniform` (Keep Proportions) the object's box
     unfolded at its true proportions.
+
+    bake_uv: name of a UV map. If given, lookup images for Blend & Bake are
+    rendered too and returned in layout["lookups"] (see bake.py).
 
     Returns (blender_image, png_bytes, bounds, layout); see plan_layout. The
     image is packed into the .blend so the thumbnail survives saving.
@@ -155,38 +266,14 @@ def capture_views(obj, size, front_axis, uniform, style, progress=None):
 
         for step, side in enumerate(projection.SIDES):
             x, y, w, h = layout["pixel_rects"][side]
-            matrix, ortho, aspect, mirror, clip_start, clip_end = \
-                _camera_for_side(obj, mid, half, side, front_axis)
-            cam.matrix_world = matrix
-            cam_data.ortho_scale = ortho
-            cam_data.clip_start = clip_start * 0.5
-            cam_data.clip_end = clip_end
-            scene.render.resolution_x = w
-            scene.render.resolution_y = h
-            # The side's real shape is `aspect` (width/height); the cell is w x h
-            # pixels. Non-square pixels make up the difference, exactly like the
-            # projection stretches it back. In the proportional layout the cell
-            # already has the side's shape, so this is ~1.
-            pixel = min(max(aspect / (w / h), 1 / 200), 200)
-            scene.render.pixel_aspect_x = max(pixel, 1.0)
-            scene.render.pixel_aspect_y = max(1.0 / pixel, 1.0)
-
-            path = os.path.join(tmpdir, f"{side.lower()}.png")
-            scene.render.filepath = path
-            bpy.ops.render.render(write_still=True, scene=scene.name)
-
-            view_img = bpy.data.images.load(path)
-            try:
-                pixels = np.empty(w * h * 4, dtype=np.float32)
-                view_img.pixels.foreach_get(pixels)
-            finally:
-                bpy.data.images.remove(view_img)
-            view = pixels.reshape(h, w, 4)[::-1]       # Blender stores bottom row first
-            if mirror:
-                view = view[:, ::-1]
-            sheet[y:y + h, x:x + w] = view
+            mirror = _aim(scene, cam, cam_data, obj, mid, half, side, front_axis, w, h)
+            sheet[y:y + h, x:x + w] = _render_pixels(
+                scene, os.path.join(tmpdir, f"{side.lower()}.png"), w, h, mirror)
             if progress:
                 progress(step + 1)
+        if bake_uv:
+            layout["lookups"] = _render_lookups(scene, cam, cam_data, obj, mid, half,
+                                                front_axis, layout, bake_uv, tmpdir)
     finally:
         obj.hide_render = was_hidden
         bpy.data.scenes.remove(scene)

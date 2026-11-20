@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "uvusee"
-version = "1.1.0"
+version = "1.0.0"
 name = "UVUSee"
 tagline = "Texture objects with AI from a single prompt"
 maintainer = "AeroAndZero"

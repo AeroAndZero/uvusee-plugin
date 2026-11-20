@@ -1,6 +1,8 @@
 """Settings: AI provider, keys and server details in the add-on preferences
 (shared by every .blend file), everything else on the scene (saved with the .blend)."""
 
+import math
+
 import bpy
 from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty,
                        PointerProperty, StringProperty)
@@ -252,6 +254,48 @@ class AITexSettings(bpy.types.PropertyGroup):
             ("EMISSION", "Flat", "Emission: shows the image exactly, ignoring lights"),
         ],
         default="PRINCIPLED",
+    )
+
+    # --- How AI results are put on the object --------------------------------
+    ai_projection: EnumProperty(
+        name="Method",
+        description="How the painted views are put onto the object",
+        items=[
+            ("BAKE", "Blend & Bake", "Blend all views into one UV texture, favouring the view "
+                                     "that sees each spot most directly. Soft seams, no "
+                                     "stretching on slanted faces, hidden areas filled in"),
+            ("BOX", "Box", "Each face takes the view it points at most (the original method). "
+                           "Fast, but hard seams and stretching on slanted faces"),
+        ],
+        default="BAKE",
+    )
+    bake_size: EnumProperty(
+        name="Texture Size",
+        items=[("1024", "1024 px", ""), ("2048", "2048 px", ""), ("4096", "4096 px", "")],
+        default="2048",
+    )
+    bake_uvs: EnumProperty(
+        name="UVs",
+        items=[
+            ("AUTO", "Auto Unwrap", "Smart UV Project into a 'UVUSeeBake' UV map (your other "
+                                    "UV maps are kept)"),
+            ("ACTIVE", "Active UV Map", "Use your own active UV map. Overlapping islands "
+                                        "(e.g. mirrored halves) will share colours"),
+        ],
+        default="AUTO",
+    )
+    bake_sharpness: FloatProperty(
+        name="Blend Sharpness",
+        description="How strongly the most direct view wins where views overlap. "
+                    "Low: smoother blends; high: crisper detail, more visible seams",
+        default=4.0, min=1.0, max=16.0,
+    )
+    bake_max_angle: FloatProperty(
+        name="Max View Angle",
+        description="Ignore a view where it sees the surface at a steeper angle than "
+                    "this (stretched, unreliable pixels)",
+        default=math.radians(80.0), min=math.radians(30.0), max=math.radians(89.0),
+        subtype="ANGLE",
     )
 
     # --- Manual cubemap --------------------------------------------------------

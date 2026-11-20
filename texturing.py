@@ -1,15 +1,18 @@
 """Putting a cubemap image onto a mesh: the UV map and the material."""
 
+import math
+
 import bpy
 import numpy as np
 
 from . import projection
 
-UV_NAME = "CubemapUV"
+UV_NAME = "CubemapUV"         # Box projection
+BAKE_UV_NAME = "UVUSeeBake"   # Blend & Bake with Auto Unwrap
 KEY_PROP = "ai_texture_key"   # custom property marking materials this add-on owns
 
 
-def ensure_material(image, shading, key, name):
+def ensure_material(image, shading, key, name, uv_name=UV_NAME):
     """Find (or make) the material identified by `key` and point it at `image`.
 
     `key` is any datablock: the image for manual projection (one material per
@@ -27,7 +30,7 @@ def ensure_material(image, shading, key, name):
     nodes.clear()
 
     uv = nodes.new("ShaderNodeUVMap")
-    uv.uv_map = UV_NAME
+    uv.uv_map = uv_name
     uv.location = (-700, 0)
 
     tex = nodes.new("ShaderNodeTexImage")
@@ -120,6 +123,81 @@ def apply_cubemap(obj, image, material, *, layout, mode, front_axis, uniform,
     mesh.uv_layers.active = uv_layer
     uv_layer.active_render = True
 
+    slot = mesh.materials.find(material.name)
+    if slot < 0:
+        mesh.materials.append(material)
+        slot = len(mesh.materials) - 1
+    mesh.polygons.foreach_set("material_index",
+                              np.full(len(mesh.polygons), slot, dtype=np.int32))
+    mesh.update()
+    return None
+
+
+# --- Blend & Bake ---------------------------------------------------------------
+
+def prepare_bake_uvs(context, obj, source):
+    """Make sure `obj` has the UV map the bake writes into; return its name.
+
+    source "AUTO":   (re)unwrap with Smart UV Project into the UVUSeeBake map.
+                     Other UV maps, other objects and the selection are untouched.
+    source "ACTIVE": use the object's active UV map as it is (your own unwrap;
+                     overlapping islands will share colours).
+    Must be called in Object Mode. Raises ValueError with a message for the user.
+    """
+    mesh = obj.data
+    if source == "ACTIVE":
+        layer = mesh.uv_layers.active
+        if layer is None:
+            raise ValueError(f"'{obj.name}' has no UV map. Use Auto Unwrap instead")
+        return layer.name
+
+    layer = mesh.uv_layers.get(BAKE_UV_NAME) or mesh.uv_layers.new(name=BAKE_UV_NAME)
+    if layer is None:
+        raise ValueError(f"'{obj.name}' already has the maximum number of UV maps")
+    mesh.uv_layers.active = layer
+
+    view_layer = context.view_layer
+    selected = [o for o in view_layer.objects if o.select_get()]
+    active = view_layer.objects.active
+    saved = {}
+    for domain in ("vertices", "edges", "polygons"):
+        items = getattr(mesh, domain)
+        for flag in ("select", "hide"):
+            values = np.empty(len(items), dtype=bool)
+            items.foreach_get(flag, values)
+            saved[domain, flag] = values
+            # Smart UV Project only unwraps visible, selected faces.
+            items.foreach_set(flag, np.full(len(items), flag == "select"))
+    try:
+        for o in selected:
+            o.select_set(False)
+        obj.select_set(True)
+        view_layer.objects.active = obj
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=0.006,
+                                 correct_aspect=True, scale_to_bounds=False)
+    finally:
+        if obj.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        for (domain, flag), values in saved.items():
+            getattr(mesh, domain).foreach_set(flag, values)
+        mesh.update()
+        obj.select_set(False)
+        for o in selected:
+            o.select_set(True)
+        view_layer.objects.active = active
+    return BAKE_UV_NAME
+
+
+def apply_baked(obj, material, uv_name):
+    """Show the baked texture: make `uv_name` the active/render UV map and put
+    `material` on every face (other slots stay, unused)."""
+    mesh = obj.data
+    layer = mesh.uv_layers.get(uv_name)
+    if layer is None:
+        return f"'{obj.name}' no longer has the UV map '{uv_name}'"
+    mesh.uv_layers.active = layer
+    layer.active_render = True
     slot = mesh.materials.find(material.name)
     if slot < 0:
         mesh.materials.append(material)

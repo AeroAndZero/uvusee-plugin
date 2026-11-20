@@ -137,9 +137,17 @@ class AITEX_PT_projection(_AITexPanel, bpy.types.Panel):
         layout.use_property_split = True
         layout.use_property_decorate = False
         s = context.scene.ai_texture
+        layout.prop(s, "ai_projection")
+        if s.ai_projection == "BAKE":
+            col = layout.column(align=True)
+            col.prop(s, "bake_size")
+            col.prop(s, "bake_uvs")
+            col.prop(s, "bake_sharpness")
+            col.prop(s, "bake_max_angle")
+        layout.separator()
         layout.prop(s, "front_axis")
         layout.prop(s, "shading", expand=True)
-        layout.prop(s, "padding")
+        layout.prop(s, "padding")      # Box and existing cubemaps
         layout.prop(s, "uniform")
 
 

@@ -1,5 +1,6 @@
 """Buttons: Generate, Cancel, Preview Capture, and manual Project Cubemap."""
 
+import math
 import os
 import tempfile
 
@@ -9,12 +10,13 @@ from . import capture, client, jobs, projection, providers, texturing
 from .properties import get_prefs, provider_key, provider_problem
 
 
-def _capture(context, obj, s):
+def _capture(context, obj, s, bake_uv=None):
     wm = context.window_manager
     wm.progress_begin(0, len(projection.SIDES))
     try:
         return capture.capture_views(obj, int(s.face_size), s.front_axis, s.uniform,
-                                     s.capture_style, progress=wm.progress_update)
+                                     s.capture_style, progress=wm.progress_update,
+                                     bake_uv=bake_uv)
     finally:
         wm.progress_end()
 
@@ -70,11 +72,31 @@ class AITEX_OT_generate(bpy.types.Operator):
             self.report({"ERROR"}, f"'{obj.name}' has no faces to texture")
             return {"CANCELLED"}
 
+        # Blend & Bake needs a UV map to bake into and lookup images rendered
+        # with the capture; both need Object Mode.
+        bake_opts = None
+        was_editing = obj.mode == "EDIT"
         try:
-            image, png, bounds, layout = _capture(context, obj, s)
-        except Exception as err:
-            self.report({"ERROR"}, f"Capturing the views failed: {err}")
-            return {"CANCELLED"}
+            if s.ai_projection == "BAKE":
+                if was_editing:
+                    bpy.ops.object.mode_set(mode="OBJECT")
+                try:
+                    uv_name = texturing.prepare_bake_uvs(context, obj, s.bake_uvs)
+                except (ValueError, RuntimeError) as err:
+                    self.report({"ERROR"}, f"Preparing UVs failed: {err}")
+                    return {"CANCELLED"}
+                bake_opts = {"uv": uv_name, "size": int(s.bake_size),
+                             "sharpness": s.bake_sharpness,
+                             "min_cos": math.cos(s.bake_max_angle)}
+            try:
+                image, png, bounds, layout = _capture(
+                    context, obj, s, bake_uv=bake_opts["uv"] if bake_opts else None)
+            except Exception as err:
+                self.report({"ERROR"}, f"Capturing the views failed: {err}")
+                return {"CANCELLED"}
+        finally:
+            if was_editing and obj.mode != "EDIT":
+                bpy.ops.object.mode_set(mode="EDIT")
         s.last_capture = image
         width, height = image.size
 
@@ -88,6 +110,7 @@ class AITEX_OT_generate(bpy.types.Operator):
             # Hosted models answer at their own resolution, on the padded canvas
             # we sent: scale back to it and crop the capture out of it.
             "canvas": plan["canvas"] if hosted else None,
+            "bake": bake_opts,
         }, provider_label=providers.PROVIDERS[provider]["label"] if hosted else "")
 
         # Start the worker to send the job to the server for processing.

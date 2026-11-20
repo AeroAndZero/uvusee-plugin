@@ -56,10 +56,27 @@ Sub-sections:
 - **Capture**: resolution per view, and *Clay* (shape only) or *Current Look*
   (the object's present colours, useful to refine an earlier result).
   *Preview Capture* makes the image without sending it.
-- **Projection**: which side is the front, Lit/Flat material, edge padding,
-  Keep Proportions.
+- **Projection**: the method (below), which side is the front, Lit/Flat
+  material, edge padding, Keep Proportions.
 - **Use Existing Cubemap**: project any cubemap image file yourself (cross,
   strip or 3×2 layouts, with per-face rotate/mirror fixes).
+
+## Projection methods
+
+- **Blend & Bake** (default): bakes all views into one UV texture. Each spot
+  takes a blend of the views that see it, weighted towards the one looking at
+  it most directly, so seams are soft and slanted faces aren't stretched.
+  Areas no view saw are filled from their surroundings. Options: texture size,
+  UVs (*Auto Unwrap* into a `UVUSeeBake` UV map, or your *Active UV Map*),
+  *Blend Sharpness* and *Max View Angle*. How it works: at capture time each
+  view is rendered a second time as a hidden "lookup" image holding, per
+  pixel, the UV coordinate of the visible surface and how directly the view
+  sees it; when the painted views return, every painted pixel is added into
+  the texture at its UV (`bake.py`). The bake runs in the background and takes
+  a few seconds (longer at 4096 px).
+- **Box**: every face takes the one view it points at most, through a
+  `CubemapUV` map that reads the returned image directly. Instant, but with
+  hard seams and stretching on slanted faces.
 
 ## Server API
 
@@ -150,12 +167,13 @@ supports it can drop the job. Servers without that endpoint can ignore it.
 
 ## Good to know
 
-- The texture is applied through a UV map named `CubemapUV` and a material
-  named `AI Texture <object>`; existing UV maps and materials are kept. Each
-  new result for the same object replaces the previous image in that material.
-- Projection is box mapping: a face gets the view its normal points to most.
-  Surfaces hidden in every view (inside a cup, under an arm) get the colour of
-  whatever covered them in that view. Slanted faces get stretched pixels.
+- The texture is applied through a material named `AI Texture <object>` and a
+  UV map (`UVUSeeBake` or your own for Blend & Bake, `CubemapUV` for Box);
+  existing UV maps and materials are kept. Each new result for the same object
+  replaces the previous image in that material.
+- With six straight-on views, surfaces hidden in all of them (inside a cup,
+  under an arm) are guessed: Blend & Bake fills them from their surroundings,
+  Box gives them the colour of whatever covered them.
 - The bounding box covers modifiers too (e.g. Mirror), and capture and
   projection use the same box, so the result lines up with the views sent.
 - Add-on preferences store the API key unencrypted.

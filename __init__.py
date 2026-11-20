@@ -10,17 +10,18 @@ How the pieces fit together:
     providers.py   talks to ChatGPT (OpenAI) and Nano Banana (Google Gemini)
     jobs.py        watches the background request and applies the result
     texturing.py   writes the UV map and material onto the mesh
-    projection.py  the pure maths shared by capture and texturing
+    projection.py  the pure maths shared by capture and texturing (Box method)
+    bake.py        blends the painted views into one UV texture (Blend & Bake)
 """
 
 # When you run "Reload Scripts", Blender re-imports this file but would keep
 # the old copies of the other modules. Reloading them here picks up edits.
 if "bpy" in locals():
     import importlib
-    for _mod in (projection, client, providers, texturing, capture, jobs, properties, operators, ui):
+    for _mod in (projection, bake, client, providers, texturing, capture, jobs, properties, operators, ui):
         importlib.reload(_mod)
 else:
-    from . import projection, client, providers, texturing, capture, jobs, properties, operators, ui
+    from . import projection, bake, client, providers, texturing, capture, jobs, properties, operators, ui
 
 import bpy
 

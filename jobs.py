@@ -16,9 +16,9 @@ import time
 import bpy
 import numpy as np
 
-from . import client, projection, providers, texturing
+from . import bake, capture, client, projection, providers, texturing
 
-ACTIVE = {"uploading", "waiting", "received"}
+ACTIVE = {"uploading", "waiting", "received", "baking", "baked"}
 
 
 def _clock(seconds):
@@ -88,6 +88,9 @@ class Job:
         now = time.monotonic()
         if self.state == "received":
             return "BRUSH_DATA", self.message or "Applying texture…", ""
+        if self.state in ("baking", "baked"):
+            return "TEXTURE", self.message or "Baking the texture…", \
+                f"Total {_clock(time.monotonic() - self.started)}"
         phase = self.phase
         if phase == "uploading":
             icon, head = "EXPORT", "Uploading views to the server…"
@@ -201,9 +204,9 @@ def _tick():
     _redraw()
     if job is None or not job.running:
         return None                                # stop the timer
-    if job.state == "received":
+    if job.state in ("received", "baked"):
         try:
-            done = _apply(job)
+            done = _apply(job) if job.state == "received" else _finish_bake(job)
         except Exception as err:
             job.finish("failed", f"Couldn't apply the result: {err}")
             done = True
@@ -236,6 +239,7 @@ def _apply(job):
         job.finish("failed", "The server's reply couldn't be opened as an image")
         return True
     opts = job.options
+    bake_opts = opts.get("bake")
     sent = opts["layout"]                          # the layout of the capture we sent
     cap_w, cap_h = sent["size"]
     who = job.provider_label or "The server"
@@ -259,9 +263,10 @@ def _apply(job):
             image = _crop(image, ox, oy, cap_w, cap_h)
         width, height = cap_w, cap_h
         layout = sent["uv"]
-    elif sent["name"] == "proportional_cross":
-        # Custom server with the Keep Proportions layout: any resolution with
-        # the same shape works; scale it to the capture's size.
+    elif sent["name"] == "proportional_cross" or bake_opts:
+        # Custom server with the Keep Proportions layout, or any layout when
+        # baking: any resolution with the same shape works; scale it to the
+        # capture's size so it lines up with the lookup images.
         if abs((width / height) / (cap_w / cap_h) - 1.0) > 0.06:
             return shape_error(cap_w, cap_h)
         if (width, height) != (cap_w, cap_h):
@@ -283,6 +288,19 @@ def _apply(job):
     except OSError:
         pass
 
+    if bake_opts:
+        # Blend & Bake: the heavy lifting is numpy, done on a background thread
+        # so Blender stays responsive; _finish_bake picks the result up.
+        image.name = f"AI Result {obj.name}"
+        job.raw_image_name = image.name
+        painted = _pixels_rgb(image)
+        views = [(sent["pixel_rects"][side], sent["lookups"][side]) for side in projection.SIDES]
+        job.state = "baking"
+        job.message = "Baking the texture…"
+        threading.Thread(target=_bake_worker, args=(job, painted, views, bake_opts),
+                         daemon=True).start()
+        return False
+
     material = texturing.ensure_material(image, opts["shading"], key=obj,
                                          name=f"AI Texture {obj.name}")
     error = texturing.apply_cubemap(
@@ -296,6 +314,67 @@ def _apply(job):
     scene = bpy.data.scenes.get(job.scene_name)
     if scene is not None:
         scene.ai_texture.last_result = image
+    _undo_push("AI Texture")
+    job.finish("done", f"Textured '{obj.name}' in {job.elapsed:.0f} s")
+    return True
+
+
+def _pixels_rgb(image):
+    """(H, W, 3) float RGB of a Blender image, top row first."""
+    width, height = image.size
+    pixels = np.empty(width * height * 4, dtype=np.float32)
+    image.pixels.foreach_get(pixels)
+    return pixels.reshape(height, width, 4)[::-1, :, :3].copy()
+
+
+def _bake_worker(job, painted, views, opts):
+    """Background thread: pure numpy, never touches bpy."""
+    try:
+        texture, _coverage = bake.bake(painted, views, size=opts["size"],
+                                       sharpness=opts["sharpness"], min_cos=opts["min_cos"])
+        png = capture.encode_png(texture)
+    except Exception as err:
+        if job.running:
+            job.finish("failed", f"Baking failed: {err!r}")
+        return
+    if job.running:
+        job.baked_png = png
+        job.state = "baked"
+
+
+def _finish_bake(job):
+    """Main thread: turn the baked pixels into an image and material."""
+    obj = bpy.data.objects.get(job.object_name)
+    if obj is None or obj.type != "MESH":
+        job.finish("failed", f"'{job.object_name}' was deleted or renamed while waiting")
+        return True
+    if obj.mode == "EDIT":
+        job.message = "Texture baked: leave Edit Mode to apply it"
+        return False
+    opts = job.options
+    uv_name = opts["bake"]["uv"]
+
+    fd, path = tempfile.mkstemp(prefix="ai_texture_baked_", suffix=".png")
+    with os.fdopen(fd, "wb") as f:
+        f.write(job.baked_png)
+    texture = bpy.data.images.load(path)
+    texture.name = f"AI Texture {obj.name}"
+    texture.pack()
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+    material = texturing.ensure_material(texture, opts["shading"], key=obj,
+                                         name=f"AI Texture {obj.name}", uv_name=uv_name)
+    error = texturing.apply_baked(obj, material, uv_name)
+    if error:
+        job.finish("failed", error)
+        return True
+    scene = bpy.data.scenes.get(job.scene_name)
+    raw = bpy.data.images.get(getattr(job, "raw_image_name", ""))
+    if scene is not None and raw is not None:
+        scene.ai_texture.last_result = raw        # the "Received" thumbnail: what came back
     _undo_push("AI Texture")
     job.finish("done", f"Textured '{obj.name}' in {job.elapsed:.0f} s")
     return True
