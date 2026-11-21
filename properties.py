@@ -208,6 +208,20 @@ class AITexSettings(bpy.types.PropertyGroup):
                ("1024", "1024 px", ""), ("2048", "2048 px", "")],
         default="512",
     )
+    capture_layout: EnumProperty(
+        name="Layout",
+        description="How the six views are arranged in the image sent to the AI",
+        items=[
+            ("CROSS_H", "Horizontal Cross", "4×3: top / left front right back / bottom (recommended)"),
+            ("CROSS_V", "Vertical Cross", "3×4: top / left front right / bottom / back (upside down)"),
+            ("STRIP_H", "Horizontal Strip", "6×1: right left top bottom front back. Very wide: "
+                                            "ChatGPT / Nano Banana get it padded, losing resolution"),
+            ("STRIP_V", "Vertical Strip", "1×6: right left top bottom front back. Very tall: "
+                                          "ChatGPT / Nano Banana get it padded, losing resolution"),
+            ("GRID_3X2", "3×2 Grid", "right left top / bottom front back"),
+        ],
+        default="CROSS_H",
+    )
     capture_style: EnumProperty(
         name="Capture Style",
         items=[
@@ -239,7 +253,7 @@ class AITexSettings(bpy.types.PropertyGroup):
                     "tall objects fill the image tightly (the image is then not 4:3). "
                     "Existing cubemaps: the same scale on every axis, so shorter "
                     "sides use only the middle part of their square",
-        default=True,
+        default=False,
     )
     padding: FloatProperty(
         name="Edge Padding",
@@ -288,13 +302,13 @@ class AITexSettings(bpy.types.PropertyGroup):
         name="Blend Sharpness",
         description="How strongly the most direct view wins where views overlap. "
                     "Low: smoother blends; high: crisper detail, more visible seams",
-        default=2.0, min=1.0, max=16.0,
+        default=4.0, min=1.0, max=16.0,
     )
     bake_max_angle: FloatProperty(
         name="Max View Angle",
         description="Ignore a view where it sees the surface at a steeper angle than "
                     "this (stretched, unreliable pixels)",
-        default=math.radians(66.0), min=math.radians(30.0), max=math.radians(89.0),
+        default=math.radians(80.0), min=math.radians(30.0), max=math.radians(89.0),
         subtype="ANGLE",
     )
 
@@ -304,7 +318,9 @@ class AITexSettings(bpy.types.PropertyGroup):
         type=bpy.types.Image,
         description="Cubemap image containing all six faces",
     )
-    layout: EnumProperty(name="Layout", items=LAYOUT_ITEMS, default="AUTO")
+    layout: EnumProperty(name="Image Layout", items=LAYOUT_ITEMS, default="AUTO",
+                         description="How the six faces are arranged in the cubemap image "
+                                     "chosen above (not the AI capture: see Capture > Layout)")
     mode: EnumProperty(
         name="Projection",
         items=[

@@ -50,9 +50,8 @@ RETRY_DELAYS = (5, 15)             # seconds; two retries at most
 # Added between the user's context prompt and their own words. Hosted models
 # don't know they're painting a cubemap, so spell out what must not move.
 ALIGNMENT_PROMPT = (
-    "The picture shows six views of one object laid out like an unfolded box (a cross "
-    "shape) on a plain black background. Keep the exact same layout, size and position "
-    "of every view, and "
+    "The picture shows these six views of one object on a plain black background. Keep "
+    "the exact same layout, size, orientation and position of every view, and "
     "keep every outline and silhouette exactly where it is, so the result can be "
     "projected back onto the 3D object. Keep the background and all empty areas "
     "plain black. Do not add text, borders, shadows or new objects. "

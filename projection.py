@@ -109,49 +109,81 @@ def grid_pixel_rects(layout, face_px):
              for side, (col, row, _turns) in cells.items()})
 
 
-def proportional_net(extent_x, extent_y, extent_z, budget_px, max_side, min_px=8, multiple=16):
-    """The object's bounding box unfolded as a cross, every side at its true
-    proportions and the same pixel density ("Keep Proportions").
+# Which box dimensions each side shows, as (across, up) in its upright view:
+# x = width (left-right), y = depth (front-back), z = height.
+SIDE_DIMS = {"FRONT": (0, 2), "BACK": (0, 2), "LEFT": (1, 2), "RIGHT": (1, 2),
+             "TOP": (0, 1), "BOTTOM": (0, 1)}
 
-        x = width (left-right), y = depth (front-back), z = height.
+LAYOUT_TITLES = {          # names used in the server request
+    "CROSS_H": "horizontal_cross", "CROSS_V": "vertical_cross",
+    "STRIP_H": "horizontal_strip", "STRIP_V": "vertical_strip", "GRID_3X2": "grid_3x2",
+}
+
+
+def proportional_layout(layout, extent_x, extent_y, extent_z, budget_px, max_side,
+                        min_px=8, multiple=16):
+    """A grid layout (a LAYOUTS key) with every side at its true proportions
+    and the same pixel density ("Keep Proportions").
+
+    Each column is as wide as its widest side and each row as tall as its
+    tallest; sides are centred in their slot. For the crosses this is exactly
+    the box unfolded, e.g. the horizontal cross:
 
                 [ TOP    x*y ]
         [LEFT y*z][FRONT x*z][RIGHT y*z][BACK x*z]
                 [ BOTTOM x*y ]
 
-    The scale is chosen so the image has about `budget_px` pixels (the same as
-    the 4:3 cross would) and no side longer than `max_side`. The total size is
-    rounded up to a multiple of `multiple` (friendlier for image models); the
-    extra strip on the right/bottom is left empty.
+    The scale is chosen so the image has about `budget_px` pixels and no side
+    longer than `max_side`. The total size is rounded up to a multiple of
+    `multiple` (friendlier for image models); the extra is left empty.
 
-    Returns (width, height, {side: (x, y, w, h)}) in pixels, top-left origin.
+    Returns (width, height, {side: (x, y, w, h)}) in pixels, top-left origin,
+    where (w, h) is the side as stored (i.e. after its quarter turns).
     """
-    x, y, z = (max(float(e), 0.0) for e in (extent_x, extent_y, extent_z))
-    biggest = max(x, y, z, 1e-9)
+    cols, rows, cells = LAYOUTS[layout]
+    ext = [max(float(e), 0.0) for e in (extent_x, extent_y, extent_z)]
+    biggest = max(max(ext), 1e-9)
     # Keep degenerate (flat) sides at a few pixels rather than zero.
-    x, y, z = (max(e, biggest * 1e-3) for e in (x, y, z))
-    net_w, net_h = 2 * x + 2 * y, z + 2 * y
-    scale = min((budget_px / (net_w * net_h)) ** 0.5, max_side / max(net_w, net_h))
+    ext = [max(e, biggest * 1e-3) for e in ext]
+
+    def dims(side):
+        a, b = SIDE_DIMS[side]
+        w, h = ext[a], ext[b]
+        return (h, w) if cells[side][2] % 2 else (w, h)
+
+    col_units = [max([dims(sd)[0] for sd, c in cells.items() if c[0] == i] or [0]) for i in range(cols)]
+    row_units = [max([dims(sd)[1] for sd, c in cells.items() if c[1] == j] or [0]) for j in range(rows)]
+    total_w, total_h = sum(col_units), sum(row_units)
+    scale = min((budget_px / (total_w * total_h)) ** 0.5, max_side / max(total_w, total_h))
 
     def px(v):
         return max(min_px, int(round(v * scale)))
 
-    col_w = [px(y), px(x), px(y), px(x)]
-    row_h = [px(y), px(z), px(y)]
-    col_x = [sum(col_w[:i]) for i in range(4)]
-    row_y = [sum(row_h[:i]) for i in range(3)]
-    cells = {"TOP": (1, 0), "LEFT": (0, 1), "FRONT": (1, 1), "RIGHT": (2, 1),
-             "BACK": (3, 1), "BOTTOM": (1, 2)}
-    rects = {side: (col_x[c], row_y[r], col_w[c], row_h[r]) for side, (c, r) in cells.items()}
+    side_px = {sd: (px(dims(sd)[0]), px(dims(sd)[1])) for sd in cells}
+    col_w = [max(side_px[sd][0] for sd, c in cells.items() if c[0] == i) for i in range(cols)]
+    row_h = [max(side_px[sd][1] for sd, c in cells.items() if c[1] == j) for j in range(rows)]
+    col_x = [sum(col_w[:i]) for i in range(cols)]
+    row_y = [sum(row_h[:j]) for j in range(rows)]
+    rects = {}
+    for sd, (c, r, _turns) in cells.items():
+        w, h = side_px[sd]
+        rects[sd] = (col_x[c] + (col_w[c] - w) // 2, row_y[r] + (row_h[r] - h) // 2, w, h)
 
     def up(v):
         return -(-v // multiple) * multiple
     return up(sum(col_w)), up(sum(row_h)), rects
 
 
-def net_uv_rects(width, height, pixel_rects):
+def proportional_net(extent_x, extent_y, extent_z, budget_px, max_side, min_px=8, multiple=16):
+    """The horizontal cross at true proportions (see proportional_layout)."""
+    return proportional_layout("CROSS_H", extent_x, extent_y, extent_z, budget_px, max_side,
+                               min_px, multiple)
+
+
+def net_uv_rects(width, height, pixel_rects, turns=None):
     """Pixel rectangles (top-left origin) -> UV rectangles for compute_uvs."""
-    return {side: (x / width, 1.0 - (y + h) / height, w / width, h / height, 0)
+    turns = turns or {}
+    return {side: (x / width, 1.0 - (y + h) / height, w / width, h / height, turns.get(side, 0))
             for side, (x, y, w, h) in pixel_rects.items()}
 
 

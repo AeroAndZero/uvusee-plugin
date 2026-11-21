@@ -20,6 +20,8 @@ views, so more cameras can be added later.
 
 import numpy as np
 
+EDGE_FACTOR = 3.0     # a UV jump this many times the usual step counts as an edge
+
 
 def bilinear(image, x, y):
     """Sample an (H, W, C) image (top row first) at float pixel coords x, y."""
@@ -35,6 +37,20 @@ def bilinear(image, x, y):
     top = image[y0, x0] * (1 - fx) + image[y0, x1] * fx
     bottom = image[y1, x0] * (1 - fx) + image[y1, x1] * fx
     return top * (1 - fy) + bottom * fy
+
+
+def typical_step(lookup):
+    """Median UV distance between neighbouring on-object lookup pixels: how far
+    apart this view's samples normally are in the texture."""
+    u, v, alpha = lookup[..., 0], lookup[..., 1], lookup[..., 3]
+    inside = alpha > 0.5
+    steps = []
+    for a, b in ((np.s_[:, :-1], np.s_[:, 1:]), (np.s_[:-1, :], np.s_[1:, :])):
+        both = inside[a] & inside[b]
+        d = np.maximum(np.abs(u[a] - u[b]), np.abs(v[a] - v[b]))[both]
+        if d.size:
+            steps.append(d)
+    return float(np.median(np.concatenate(steps))) if steps else 0.0
 
 
 def usable_pixels(lookup, min_cos, jump):
@@ -170,9 +186,12 @@ def bake(painted, views, size=2048, sharpness=4.0, min_cos=0.17, close_gaps=2):
     total = np.zeros((size, size, 3), dtype=np.float32)
     total_w = np.zeros((size, size), dtype=np.float32)
     painted_any = np.zeros((size, size), dtype=bool)
-    jump = 4.0 / size                     # UV jump bigger than ~4 texels = an edge
     for (x, y, w, h), lookup in views:
         lh, lw = lookup.shape[:2]
+        # A UV jump much bigger than this view's usual pixel-to-pixel step is an
+        # edge (silhouette, occlusion or UV seam). Views that sample the surface
+        # coarsely have bigger usual steps, so the limit scales with them.
+        jump = max(4.0 / size, EDGE_FACTOR * typical_step(lookup))
         ok = usable_pixels(lookup, min_cos, jump)
         if not ok.any():
             continue

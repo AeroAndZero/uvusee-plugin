@@ -20,7 +20,7 @@ from mathutils import Matrix, Vector
 
 from . import projection, texturing
 
-LAYOUT = "CROSS_H"
+LAYOUT = "CROSS_H"          # the default capture layout
 RENDER_ENGINE = "BLENDER_WORKBENCH"    # fast, needs no lights, looks like the viewport
 
 
@@ -93,34 +93,48 @@ def _world_extents(obj, half, front_axis):
     return [2.0 * half[i] * (m3 @ Vector(rot_t @ np.eye(3)[i])).length for i in range(3)]
 
 
-def plan_layout(obj, size, front_axis, keep_proportions):
+def plan_layout(obj, size, front_axis, keep_proportions, layout_key=LAYOUT):
     """Decide the capture image's layout.
 
-    Normal: the 4:3 horizontal cross, every side stretched to a square cell.
-    Keep Proportions: the bounding box unfolded at its true proportions
-    (projection.proportional_net), with the same pixel budget.
+    layout_key: one of projection.LAYOUTS (horizontal/vertical cross, strips,
+    3x2 grid). Normal: every side stretched to a square cell of `size` px.
+    Keep Proportions: every side at its true proportions
+    (projection.proportional_layout), with the same pixel budget.
 
     Returns (bounds, layout) where layout is a dict:
-        name         "horizontal_cross" or "proportional_cross"
+        key          the projection.LAYOUTS key
+        name         layout name for the server, e.g. "horizontal_cross",
+                     "proportional_cross", "vertical_strip", "proportional_grid_3x2"
         size         (width, height) of the image in pixels
-        pixel_rects  {side: (x, y, w, h)} top-left origin
+        pixel_rects  {side: (x, y, w, h)} top-left origin, as stored
+        turns        {side: quarter turns counter-clockwise it is stored with}
         uv           what projection.compute_uvs takes as `layout`
     """
-    # Both layouts map each side onto its whole cell, so the projection uses
+    # Every layout maps each side onto its whole cell, so the projection uses
     # the true box (uniform=False); proportions come from the cell sizes.
     bounds = texturing.object_bounds(obj, front_axis, uniform=False)
+    cols, rows, cells = projection.LAYOUTS[layout_key]
+    turns = {side: t for side, (_c, _r, t) in cells.items()}
+    title = projection.LAYOUT_TITLES[layout_key]
     if not keep_proportions:
-        width, height, rects = projection.grid_pixel_rects(LAYOUT, size)
-        return bounds, {"name": "horizontal_cross", "size": (width, height),
-                        "pixel_rects": rects, "uv": LAYOUT}
+        width, height, rects = projection.grid_pixel_rects(layout_key, size)
+        return bounds, {"key": layout_key, "name": title, "size": (width, height),
+                        "pixel_rects": rects, "turns": turns, "uv": layout_key}
     # Size the cells from the true extents (flat sides stay thin).
     _mid, true_half = texturing.object_bounds(obj, front_axis, uniform=False, flat_fix=False)
     ex, ey, ez = _world_extents(obj, true_half, front_axis)
-    width, height, rects = projection.proportional_net(
-        ex, ey, ez, budget_px=12 * size * size, max_side=min(8 * size, 8192))
-    return bounds, {"name": "proportional_cross", "size": (width, height),
-                    "pixel_rects": rects,
-                    "uv": projection.net_uv_rects(width, height, rects)}
+    width, height, rects = projection.proportional_layout(
+        layout_key, ex, ey, ez, budget_px=cols * rows * size * size,
+        max_side=min(8 * size, 8192))
+    name = "proportional_cross" if layout_key == "CROSS_H" else f"proportional_{title}"
+    return bounds, {"key": layout_key, "name": name, "size": (width, height),
+                    "pixel_rects": rects, "turns": turns,
+                    "uv": projection.net_uv_rects(width, height, rects, turns)}
+
+
+def _upright(w, h, turns):
+    """Render size of a side stored as w x h after `turns` quarter turns."""
+    return (h, w) if turns % 2 else (w, h)
 
 
 def _aim(scene, cam, cam_data, obj, mid, half, side, front_axis, w, h):
@@ -213,16 +227,18 @@ def _render_lookups(scene, cam, cam_data, obj, mid, half, front_axis, layout, uv
         mesh.color_attributes.active_color = attr
         for side in projection.SIDES:
             _x, _y, w, h = layout["pixel_rects"][side]
+            turns = layout["turns"][side]
             scale = min(2.0, LOOKUP_MAX_SIDE / max(w, h))
-            lw, lh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+            lw, lh = _upright(max(1, int(round(w * scale))), max(1, int(round(h * scale))), turns)
             view_dir = m3 @ (rot_t @ np.array(projection.SIDE_FRAMES[side][0], dtype=np.float64))
             view_dir /= np.linalg.norm(view_dir)
             data[:, 2] = world_n @ view_dir
             attr.data.foreach_set("color", data.ravel())
             mesh.update()
             mirror = _aim(scene, cam, cam_data, obj, mid, half, side, front_axis, lw, lh)
-            lookups[side] = _render_pixels(scene, os.path.join(tmpdir, f"lookup_{side.lower()}.exr"),
-                                           lw, lh, mirror).copy()
+            view = _render_pixels(scene, os.path.join(tmpdir, f"lookup_{side.lower()}.exr"),
+                                  lw, lh, mirror)
+            lookups[side] = np.ascontiguousarray(np.rot90(view, turns))
     finally:
         mesh.color_attributes.remove(mesh.color_attributes[LOOKUP_ATTR])
         if previous_active and previous_active in mesh.color_attributes:
@@ -231,11 +247,13 @@ def _render_lookups(scene, cam, cam_data, obj, mid, half, front_axis, layout, uv
     return lookups
 
 
-def capture_views(obj, size, front_axis, uniform, style, progress=None, bake_uv=None):
+def capture_views(obj, size, front_axis, uniform, style, progress=None, bake_uv=None,
+                  layout_key=LAYOUT):
     """Render six views of `obj` and assemble them into one image: the 4:3
     horizontal cross, or with `uniform` (Keep Proportions) the object's box
     unfolded at its true proportions.
 
+    layout_key: arrangement of the six views (projection.LAYOUTS key).
     bake_uv: name of a UV map. If given, lookup images for Blend & Bake are
     rendered too and returned in layout["lookups"] (see bake.py).
 
@@ -244,7 +262,7 @@ def capture_views(obj, size, front_axis, uniform, style, progress=None, bake_uv=
     """
     if obj.mode == "EDIT":
         obj.update_from_editmode()
-    bounds, layout = plan_layout(obj, size, front_axis, uniform)
+    bounds, layout = plan_layout(obj, size, front_axis, uniform, layout_key)
     mid, half = bounds
     width, height = layout["size"]
 
@@ -266,9 +284,12 @@ def capture_views(obj, size, front_axis, uniform, style, progress=None, bake_uv=
 
         for step, side in enumerate(projection.SIDES):
             x, y, w, h = layout["pixel_rects"][side]
-            mirror = _aim(scene, cam, cam_data, obj, mid, half, side, front_axis, w, h)
-            sheet[y:y + h, x:x + w] = _render_pixels(
-                scene, os.path.join(tmpdir, f"{side.lower()}.png"), w, h, mirror)
+            turns = layout["turns"][side]
+            rw, rh = _upright(w, h, turns)
+            mirror = _aim(scene, cam, cam_data, obj, mid, half, side, front_axis, rw, rh)
+            view = _render_pixels(scene, os.path.join(tmpdir, f"{side.lower()}.png"), rw, rh, mirror)
+            # Some layouts store a side rotated (e.g. the vertical cross's back).
+            sheet[y:y + h, x:x + w] = np.rot90(view, turns)
             if progress:
                 progress(step + 1)
         if bake_uv:
@@ -361,13 +382,18 @@ def encode_png(rgb):
 def faces_description(layout):
     """Where each side sits in the sent image, for the server.
 
-    horizontal_cross:   {"front": [col, row], ...}       (grid cells, as before)
-    proportional_cross: {"front": [x, y, w, h], ...}     (pixels, top-left origin)
+    Grid layouts:        {"front": [col, row], ...}       (cells, as before)
+    proportional_* ones: {"front": [x, y, w, h], ...}     (pixels, top-left origin)
     """
-    if layout["name"] == "horizontal_cross":
-        _cols, _rows, cells = projection.LAYOUTS[LAYOUT]
+    if not layout["name"].startswith("proportional"):
+        _cols, _rows, cells = projection.LAYOUTS[layout["key"]]
         return {side.lower(): [col, row] for side, (col, row, _t) in cells.items()}
     return face_rects(layout)
+
+
+def face_turns(layout):
+    """{"back": 2, ...}: quarter turns counter-clockwise each face is stored with."""
+    return {side.lower(): t for side, t in layout["turns"].items()}
 
 
 def face_rects(layout):

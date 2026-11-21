@@ -169,7 +169,8 @@ def _worker(job, request):
         call = lambda: api.request_texture(  # noqa: E731
             request["image_png"], request["prompt"], request["face_size"], request["faces"],
             layout=request["layout_name"],
-            extra_fields={"face_rects": json.dumps(request["face_rects"])})
+            extra_fields={"face_rects": json.dumps(request["face_rects"]),
+                          "face_turns": json.dumps(request["face_turns"])})
     else:
         api = providers.HostedClient(request["provider"], request["api_key"], request["model"],
                                      timeout=request["timeout"], quality=request["quality"],
@@ -263,10 +264,11 @@ def _apply(job):
             image = _crop(image, ox, oy, cap_w, cap_h)
         width, height = cap_w, cap_h
         layout = sent["uv"]
-    elif sent["name"] == "proportional_cross" or bake_opts:
-        # Custom server with the Keep Proportions layout, or any layout when
-        # baking: any resolution with the same shape works; scale it to the
-        # capture's size so it lines up with the lookup images.
+    elif sent["name"].startswith("proportional") or bake_opts or \
+            abs((width / height) / (cap_w / cap_h) - 1.0) <= 0.06:
+        # Custom server answering in the layout we sent (any resolution with
+        # the same shape): scale it to the capture's size so it lines up.
+        # Keep Proportions and Blend & Bake require this.
         if abs((width / height) / (cap_w / cap_h) - 1.0) > 0.06:
             return shape_error(cap_w, cap_h)
         if (width, height) != (cap_w, cap_h):
@@ -274,7 +276,8 @@ def _apply(job):
             width, height = cap_w, cap_h
         layout = sent["uv"]
     else:
-        # Custom server with the 4:3 cross: any cubemap layout is accepted.
+        # Box with a grid layout: the server may also answer with another
+        # standard cubemap layout, recognised by its shape.
         layout = projection.detect_layout(width, height)
         if layout is None:
             bpy.data.images.remove(image)

@@ -53,13 +53,16 @@ Pick one in the add-on preferences or from the drop-down at the top of the panel
 
 Sub-sections:
 
-- **Capture**: resolution per view, and *Clay* (shape only) or *Current Look*
+- **Capture**: the layout of the six views in the image sent to the AI
+  (horizontal cross by default; vertical cross, strips or a 3×2 grid),
+  resolution per view, and *Clay* (shape only) or *Current Look*
   (the object's present colours, useful to refine an earlier result).
   *Preview Capture* makes the image without sending it.
 - **Projection**: the method (below), which side is the front, Lit/Flat
   material, edge padding, Keep Proportions.
 - **Use Existing Cubemap**: project any cubemap image file yourself (cross,
-  strip or 3×2 layouts, with per-face rotate/mirror fixes).
+  strip or 3×2 layouts, with per-face rotate/mirror fixes). Its *Image Layout*
+  only describes that file; it doesn't change the AI capture.
 
 ## Projection methods
 
@@ -88,20 +91,27 @@ Sub-sections:
 |-------------|--------|---------|
 | `image`     | file   | `cubemap.png`, RGBA PNG, `4N × 3N` pixels |
 | `prompt`    | text   | The user's prompt |
-| `layout`    | text   | `horizontal_cross`, or `proportional_cross` when *Keep Proportions* is on |
+| `layout`    | text   | `horizontal_cross` (default), `vertical_cross`, `horizontal_strip`, `vertical_strip` or `grid_3x2` (*Capture > Layout*); with *Keep Proportions*: `proportional_cross` for the horizontal cross, otherwise `proportional_<layout>` |
 | `face_size` | text   | `N`, pixels per face (256, 512, 1024 or 2048) |
 | `faces`     | text   | JSON, `[column, row]` of each face, row 0 = top: `{"top":[1,0],"left":[0,1],"front":[1,1],"right":[2,1],"back":[3,1],"bottom":[1,2]}` (for `proportional_cross`: pixel rectangles, as in `face_rects`) |
-| `face_rects` | text  | JSON, `[x, y, width, height]` of each face in pixels, top-left origin, for either layout |
+| `face_rects` | text  | JSON, `[x, y, width, height]` of each face in pixels, top-left origin, for any layout |
+| `face_turns` | text  | JSON, quarter turns counter-clockwise each face is stored with, e.g. `{"back": 2, ...}` (only the vertical cross's back is turned) |
 
 Header `Authorization: Bearer <API Key>` is sent when a key is set.
 
-The image is a horizontal cross:
+By default the image is a horizontal cross:
 
 ```
            [ TOP  ]
   [ LEFT ] [FRONT ] [RIGHT ] [ BACK ]
            [BOTTOM]
 ```
+
+Other layouts (*Capture > Layout*): vertical cross (top / left front right /
+bottom / back, the back turned upside down), horizontal or vertical strip
+(right, left, top, bottom, front, back) and 3×2 grid (right left top / bottom
+front back). `faces`, `face_rects` and `face_turns` always say exactly where
+each face is. The answer must use the same layout and shape as the request.
 
 With **Keep Proportions** on, the layout is `proportional_cross`: the same
 cross, but each cell has the true proportions of that side of the object's

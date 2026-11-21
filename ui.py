@@ -122,6 +122,7 @@ class AITEX_PT_capture(_AITexPanel, bpy.types.Panel):
         layout.use_property_split = True
         layout.use_property_decorate = False
         s = context.scene.ai_texture
+        layout.prop(s, "capture_layout")
         layout.prop(s, "face_size")
         layout.prop(s, "capture_style", expand=True)
         layout.operator("ai_texture.preview_capture", icon="RESTRICT_RENDER_OFF")

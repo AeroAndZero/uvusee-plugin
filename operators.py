@@ -10,13 +10,29 @@ from . import capture, client, jobs, projection, providers, texturing
 from .properties import get_prefs, provider_key, provider_problem
 
 
+# How the views are arranged, for the context prompt. The horizontal cross keeps
+# the original wording.
+LAYOUT_SENTENCES = {
+    "CROSS_H": "the top side is on the top, the bottom side is on the bottom. Th left, right, forward and backward sides are on the middle.",
+    "CROSS_V": ("They are arranged as a vertical cross: the top side is at the top; the left, "
+                "forward and right sides are in the second row; the bottom side is below the "
+                "forward side; the backward side is at the very bottom and is upside down."),
+    "STRIP_H": ("They are arranged in one row, from left to right: right, left, top, bottom, "
+                "forward and backward side."),
+    "STRIP_V": ("They are arranged in one column, from top to bottom: right, left, top, bottom, "
+                "forward and backward side."),
+    "GRID_3X2": ("They are arranged in two rows: the right, left and top sides in the first row; "
+                 "the bottom, forward and backward sides in the second row."),
+}
+
+
 def _capture(context, obj, s, bake_uv=None):
     wm = context.window_manager
     wm.progress_begin(0, len(projection.SIDES))
     try:
         return capture.capture_views(obj, int(s.face_size), s.front_axis, s.uniform,
                                      s.capture_style, progress=wm.progress_update,
-                                     bake_uv=bake_uv)
+                                     bake_uv=bake_uv, layout_key=s.capture_layout)
     finally:
         wm.progress_end()
 
@@ -114,7 +130,8 @@ class AITEX_OT_generate(bpy.types.Operator):
         }, provider_label=providers.PROVIDERS[provider]["label"] if hosted else "")
 
         # Start the worker to send the job to the server for processing.
-        context_prompt = "You are given six sides of an object. They are in the order of: TOP, LEFT, FRONT, RIGHT, BACK, BOTTOM. You have to add texture to the object with flat shading. Do not add any extra objects, only paint on top of the given object. keep every outline exactly in place, only change surface colours, leave transparent areas empty."
+        context_prompt = ("You are given six sides of an object. " + LAYOUT_SENTENCES[layout["key"]]
+                          + " You have to add texture to the object with flat shading. Do not add any extra objects, only paint on top of the given object. keep every outline exactly in place, only change surface colours, leave transparent areas empty. ")
         if hosted:
             context_prompt += providers.ALIGNMENT_PROMPT
         context_prompt += s.prompt.strip()
@@ -125,6 +142,7 @@ class AITEX_OT_generate(bpy.types.Operator):
             "prompt": context_prompt,
             "face_size": int(s.face_size), "faces": capture.faces_description(layout),
             "layout_name": layout["name"], "face_rects": capture.face_rects(layout),
+            "face_turns": capture.face_turns(layout),
         }
         if hosted:
             # Hosted models handle transparency poorly: send a plain background,
