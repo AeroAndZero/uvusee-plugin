@@ -4,6 +4,9 @@ Texture a mesh with AI from one prompt. The add-on renders the object from six
 sides, sends the six views as one image to your own server, ChatGPT or Nano
 Banana, and projects the answer back onto the object.
 
+Demo:
+[![Watch the video](preview/thumbnail.png)](https://youtu.be/jW5uebgJ--k)
+
 ## Install
 **Download the zip file from >>> [releases](https://github.com/AeroAndZero/uvusee-plugin/releases)**
 
