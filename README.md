@@ -5,6 +5,7 @@ sides, sends the six views as one image to your own server, ChatGPT or Nano
 Banana, and projects the answer back onto the object.
 
 ## Install
+**Download the zip file from >>> [releases](https://github.com/AeroAndZero/uvusee-plugin/releases)**
 
 Blender 4.2 or newer: **Edit → Preferences → Get Extensions → (top right) →
 Install from Disk…** and choose the zip. Then open the add-on's preferences
