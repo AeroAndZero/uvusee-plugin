@@ -18,6 +18,9 @@ Unless the provider is a server on your own machine, enable **Preferences →
 System → Network → Allow Online Access**. Requests to `localhost`/`127.0.0.1`
 are always allowed.
 
+## Custom Server
+To use the custom server, please head on to [uvusee-server](https://github.com/AeroAndZero/uvusee-server) repo and read the README
+
 ## AI providers
 
 Pick one in the add-on preferences or from the drop-down at the top of the panel.
@@ -47,9 +50,6 @@ Pick one in the add-on preferences or from the drop-down at the top of the panel
   slightly from the silhouettes and the six views may not match at their
   edges. A custom server with a geometry-aware pipeline gives the most
   accurate alignment.
-
-## Custom Server
-To use the custom server, please head on to [uvusee-server](https://github.com/AeroAndZero/uvusee-server) repo and read the README
 
 ## Use
 
