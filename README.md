@@ -6,7 +6,7 @@ Banana, and projects the answer back onto the object.
 
 ## Install
 
-Blender 4.2 or newer: **Edit → Preferences → Get Extensions → ⌄ (top right) →
+Blender 4.2 or newer: **Edit → Preferences → Get Extensions → (top right) →
 Install from Disk…** and choose the zip. Then open the add-on's preferences
 (**Add-ons → UVUSee**), pick an **AI Provider** and fill in its details.
 
@@ -17,6 +17,7 @@ are always allowed.
 ## AI providers
 
 Pick one in the add-on preferences or from the drop-down at the top of the panel.
+**You will need to add a minimum credit in order to use APIs from ChatGPT and Gemini on their website.**
 
 | Provider | Needs | Default model |
 |----------|-------|---------------|
@@ -42,6 +43,9 @@ Pick one in the add-on preferences or from the drop-down at the top of the panel
   slightly from the silhouettes and the six views may not match at their
   edges. A custom server with a geometry-aware pipeline gives the most
   accurate alignment.
+
+## Custom Server
+To use the custom server, please head on to [uvusee-server](https://github.com/AeroAndZero/uvusee-server) repo and read the README
 
 ## Use
 
@@ -155,9 +159,9 @@ Answer with any **one** of:
      any of the forms in 1 or 2 (`result_url` and `image_url` mean the same)
    - failed: `{"status": "failed", "error": "Out of GPU memory"}`
 
-   Status checks happen every 2 s while running (*Check Every* in the
+   Status checks happen every 5 seconds while running (*Check Every* in the
    preferences). While a job sits in the queue and nothing changes, they
-   slow down gradually to every 10 s.
+   slow down gradually to every 10 seconds.
 
 Errors: any 4xx/5xx status is shown to the user, using the JSON `error`,
 `detail` or `message` field if present, otherwise the start of the body.
@@ -175,7 +179,7 @@ may run once the server reports it as `running`.
 On Cancel the add-on sends `DELETE status_url` once, so a server that
 supports it can drop the job. Servers without that endpoint can ignore it.
 
-## Good to know
+## Just a heads up
 
 - The texture is applied through a material named `AI Texture <object>` and a
   UV map (`UVUSeeBake` or your own for Blend & Bake, `CubemapUV` for Box);
@@ -187,3 +191,13 @@ supports it can drop the job. Servers without that endpoint can ignore it.
 - The bounding box covers modifiers too (e.g. Mirror), and capture and
   projection use the same box, so the result lines up with the views sent.
 - Add-on preferences store the API key unencrypted.
+
+## Roadmap
+- [ ] Add ControlNet workflow to accommodate Depth texture and Normal textures
+- [ ] Add inpainting support
+- [ ] Add batched image generation mode
+
+## ❤️ Respsect the artists ❤️
+Texturing is a big part of any game development. Texture artists are irreplacable. This add-on is for indie developers who wants to speed up their process and experiment with different type of textures. 
+
+This add-on will not produce realistic and accurate results; and I would like to keep it that way.
