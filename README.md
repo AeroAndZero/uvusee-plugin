@@ -201,7 +201,7 @@ supports it can drop the job. Servers without that endpoint can ignore it.
 - [ ] Add inpainting support
 - [ ] Add batched image generation mode
 
-## ❤️ Respsect the artists ❤️
-Texturing is a big part of any game development. Texture artists are irreplacable. This add-on is for indie developers who wants to speed up their process and experiment with different type of textures. 
+## Respect the artists ❤️
+Texturing is a big part of any game development. Texture artists are irreplaceable. This add-on is for indie developers who want to speed up their process and experiment with different textures. 
 
-This add-on will not produce realistic and accurate results; and I would like to keep it that way.
+This add-on will not produce realistic and accurate results, and I would like to keep it that way.
